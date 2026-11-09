@@ -193,11 +193,160 @@ VALUES
 ('INGEST-001', '1.0.0', 'Ingestion & Timestamp Data Quality Anomaly', 'Detects data-quality anomalies including quarantined timestamps, clock skew, or future-dated events.', 'Info', 1, '598a7581f1108d23', '{"max_future_seconds":86400}');
 """
 
+MIGRATION_005_SQL = """
+-- 12. Cases (Investigation Cases assembled via deterministic correlation)
+CREATE TABLE IF NOT EXISTS cases (
+    case_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Open',
+    severity TEXT NOT NULL,
+    correlation_key_type TEXT NOT NULL,
+    correlation_key_value TEXT NOT NULL,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    algorithm_version TEXT NOT NULL DEFAULT '1.0.0',
+    dedupe_key TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    CONSTRAINT uq_case_dedupe UNIQUE (correlation_key_type, correlation_key_value, dedupe_key)
+);
+
+-- 13. Case Findings (Relational link between cases and detection findings)
+CREATE TABLE IF NOT EXISTS case_findings (
+    case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    finding_id TEXT NOT NULL REFERENCES findings(finding_id) ON DELETE CASCADE,
+    correlation_rationale TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    PRIMARY KEY (case_id, finding_id)
+);
+
+-- 14. Case Events (Relational link between cases and canonical events)
+CREATE TABLE IF NOT EXISTS case_events (
+    case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES normalized_events(event_id) ON DELETE RESTRICT,
+    relationship_type TEXT NOT NULL DEFAULT 'correlated_evidence',
+    correlation_rationale TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    PRIMARY KEY (case_id, event_id)
+);
+
+-- 15. Review Actions (Append-only operator notes and triage decisions)
+CREATE TABLE IF NOT EXISTS review_actions (
+    action_id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    action_type TEXT NOT NULL,
+    previous_status TEXT,
+    new_status TEXT,
+    operator_note TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'secops_operator',
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc'))
+);
+
+-- 16. Correlation Evaluations (Audit log of correlation engine executions)
+CREATE TABLE IF NOT EXISTS correlation_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    evaluated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    findings_scanned INTEGER NOT NULL,
+    events_scanned INTEGER NOT NULL,
+    cases_created INTEGER NOT NULL,
+    cases_updated INTEGER NOT NULL,
+    duration_ms REAL NOT NULL
+);
+
+-- Indexes for performance and query integrity
+CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
+CREATE INDEX IF NOT EXISTS idx_cases_severity ON cases(severity);
+CREATE INDEX IF NOT EXISTS idx_cases_key ON cases(correlation_key_type, correlation_key_value);
+CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_case_findings_finding ON case_findings(finding_id);
+CREATE INDEX IF NOT EXISTS idx_case_events_event ON case_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_review_actions_case ON review_actions(case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_corr_evaluations_date ON correlation_evaluations(evaluated_at DESC);
+"""
+
+MIGRATION_006_SQL = """
+-- 17. Claim Proposals (Structured agent claim proposals)
+CREATE TABLE IF NOT EXISTS claim_proposals (
+    claim_id TEXT PRIMARY KEY,
+    case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    claim_type TEXT NOT NULL,
+    predicate TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    certainty TEXT NOT NULL DEFAULT 'observed',
+    template_id TEXT NOT NULL,
+    proposed_by TEXT NOT NULL DEFAULT 'kiro_crew_agent',
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc'))
+);
+
+-- 18. Claim Verifications (Deterministic verification results & audit log)
+CREATE TABLE IF NOT EXISTS claim_verifications (
+    verification_id TEXT PRIMARY KEY,
+    claim_id TEXT NOT NULL REFERENCES claim_proposals(claim_id) ON DELETE CASCADE,
+    case_id TEXT NOT NULL REFERENCES cases(case_id) ON DELETE CASCADE,
+    status TEXT NOT NULL, -- 'verified', 'qualified', 'blocked'
+    verification_version TEXT NOT NULL DEFAULT '1.0.0',
+    checks_json TEXT NOT NULL,
+    rendered_text TEXT NOT NULL,
+    qualification_notes_json TEXT NOT NULL DEFAULT '[]',
+    blocked_reasons_json TEXT NOT NULL DEFAULT '[]',
+    suggested_remedy TEXT,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    verified_at TEXT NOT NULL DEFAULT (datetime('now', 'utc'))
+);
+
+-- Indexes for performance and query integrity
+CREATE INDEX IF NOT EXISTS idx_claim_proposals_case ON claim_proposals(case_id);
+CREATE INDEX IF NOT EXISTS idx_claim_verifications_case ON claim_verifications(case_id, verified_at DESC);
+CREATE INDEX IF NOT EXISTS idx_claim_verifications_status ON claim_verifications(status);
+"""
+
+MIGRATION_007_SQL = """
+-- 19. Replay Runs (Scenario executions, parameters, metrics, assertion outcomes)
+CREATE TABLE IF NOT EXISTS replay_runs (
+    replay_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL,
+    scenario_version TEXT NOT NULL,
+    status TEXT NOT NULL, -- 'pending', 'running', 'completed', 'failed'
+    mode TEXT NOT NULL DEFAULT 'standard', -- 'standard', 'what_if'
+    pipeline_versions_json TEXT NOT NULL DEFAULT '{}',
+    fixture_checksums_json TEXT NOT NULL DEFAULT '{}',
+    what_if_config_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    assertion_results_json TEXT NOT NULL DEFAULT '[]',
+    stages_json TEXT NOT NULL DEFAULT '[]',
+    cases_snapshot_json TEXT NOT NULL DEFAULT '[]',
+    claims_snapshot_json TEXT NOT NULL DEFAULT '[]',
+    error_summary TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    completed_at TEXT
+);
+
+-- 20. Replay Expectations (Committed scenario baseline assertions)
+CREATE TABLE IF NOT EXISTS replay_expectations (
+    scenario_id TEXT NOT NULL,
+    scenario_version TEXT NOT NULL,
+    manifest_json TEXT NOT NULL,
+    fixture_checksums_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    PRIMARY KEY (scenario_id, scenario_version)
+);
+
+-- Indexes for performance and query integrity
+CREATE INDEX IF NOT EXISTS idx_replay_runs_scenario ON replay_runs(scenario_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_replay_runs_status ON replay_runs(status);
+"""
+
 MIGRATIONS: List[Tuple[int, str, str]] = [
     (1, "001_initial_schema", MIGRATION_001_SQL),
     (2, "002_canonical_events_and_provenance", MIGRATION_002_SQL),
     (3, "003_event_parser_version", MIGRATION_003_SQL),
     (4, "004_detection_rules_and_findings", MIGRATION_004_SQL),
+    (5, "005_investigation_cases_and_correlation", MIGRATION_005_SQL),
+    (6, "006_claim_guard_proposals_and_verifications", MIGRATION_006_SQL),
+    (7, "007_replay_lab_runs_and_expectations", MIGRATION_007_SQL),
 ]
 
 

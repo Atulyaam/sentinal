@@ -1,0 +1,6 @@
+timestamp,http_method,request_path,status_code,source_ip,user_agent
+2026-11-09T08:00:00Z,GET,/index.html,200,203.0.113.88,Mozilla/5.0
+2026-11-09T08:02:00Z,GET,/admin,403,203.0.113.88,curl/8.4.0
+2026-11-09T08:04:00Z,POST,/api/v1/auth,403,203.0.113.88,curl/8.4.0
+2026-11-09T08:06:00Z,GET,/config,403,203.0.113.88,curl/8.4.0
+2026-11-09T08:12:00Z,GET,/about,200,203.0.113.88,Mozilla/5.0

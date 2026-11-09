@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReplayLabContract",
+  "description": "JSON schema definitions for Project Sentinel Replay Lab scenarios, runs, assertions, and comparisons.",
+  "definitions": {
+    "ScenarioManifest": {
+      "type": "object",
+      "required": [
+        "scenario_id",
+        "name",
+        "version",
+        "description",
+        "learning_objective",
+        "fixtures",
+        "expectations"
+      ],
+      "properties": {
+        "scenario_id": { "type": "string" },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "description": { "type": "string" },
+        "learning_objective": { "type": "string" },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["filename", "parser_id", "sha256", "size_bytes"],
+            "properties": {
+              "filename": { "type": "string" },
+              "parser_id": { "type": "string" },
+              "sha256": { "type": "string" },
+              "size_bytes": { "type": "integer" }
+            }
+          }
+        },
+        "expectations": {
+          "type": "object",
+          "required": [
+            "expected_imported_records",
+            "expected_normalized_events",
+            "expected_rules",
+            "expected_findings_count",
+            "expected_cases_count",
+            "expected_claim_outcomes"
+          ]
+        }
+      }
+    },
+    "ReplayRun": {
+      "type": "object",
+      "required": [
+        "replay_id",
+        "scenario_id",
+        "scenario_version",
+        "status",
+        "mode",
+        "metrics",
+        "assertion_results",
+        "stages"
+      ],
+      "properties": {
+        "replay_id": { "type": "string" },
+        "scenario_id": { "type": "string" },
+        "scenario_version": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "running", "completed", "failed"] },
+        "mode": { "type": "string", "enum": ["standard", "what_if"] },
+        "pipeline_versions": { "type": "object" },
+        "fixture_checksums": { "type": "object" },
+        "what_if_config": { "type": "object" },
+        "metrics": { "type": "object" },
+        "assertion_results": { "type": "array" },
+        "stages": { "type": "array" },
+        "cases_snapshot": { "type": "array" },
+        "claims_snapshot": { "type": "array" },
+        "started_at": { "type": "string" },
+        "completed_at": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

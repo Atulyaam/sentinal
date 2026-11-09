@@ -118,3 +118,4 @@ class DetectionEngine:
         )
 
         return eval_stats.to_dict()
+

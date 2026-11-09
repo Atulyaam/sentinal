@@ -23,8 +23,6 @@ export const ROUTES: RouteMeta[] = [
     id: 'investigations',
     label: 'Investigations',
     icon: 'investigations',
-    planned: true,
-    sprint: 'Sprint 5',
     description: 'Active correlated cases, timeline graphs, and operator triage decisions.',
   },
   {

@@ -1,0 +1,3 @@
+{"timestamp": "2026-11-09T08:00:00Z", "event_type": "audit_query", "user_principal": "audit_alice", "status": "SUCCESS", "attributes": {"query": "SELECT * FROM users"}}
+{"timestamp": "2026-11-09T08:05:00Z", "event_type": "role_changed", "user_principal": "audit_alice", "status": "SUCCESS", "attributes": {"action": "grant_role", "target_user": "analyst_bob", "role": "admin", "previous_role": "analyst"}}
+{"timestamp": "2026-11-09T08:15:00Z", "event_type": "audit_query", "user_principal": "audit_alice", "status": "SUCCESS", "attributes": {"query": "SELECT * FROM audit_logs"}}

@@ -238,3 +238,4 @@ $$\text{finding\_id} = \text{"find\_"} + \text{SHA256}(\text{Seed})[0:24]$$
 - **Findings Table:** Columns for Title, Severity, Rule ID & Version, Matched Entity, Status, Observed Window, Supporting Events Count.
 - **Detail Drawer / Modal:** Explains triggering rationale, matched conditions, rule limitations, and provides interactive links to view the supporting canonical events.
 - **Rules Drawer:** Displays available detection rules and allows toggling enabled status.
+

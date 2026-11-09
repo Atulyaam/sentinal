@@ -125,19 +125,26 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           </p>
           <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }}>
             <button
-              onClick={() => onNavigate('events')}
+              onClick={() => onNavigate('investigations')}
               className="nav-item"
               style={{ width: 'auto', background: 'var(--color-accent)', color: '#FFFFFF', padding: '8px 16px', margin: 0, fontSize: '13px' }}
             >
-              <span>Inspect Canonical Events</span>
+              <span>Open Investigations</span>
               <ArrowRightIcon size={14} />
             </button>
             <button
-              onClick={() => onNavigate('sources')}
+              onClick={() => onNavigate('findings')}
               className="nav-item"
               style={{ width: 'auto', background: 'transparent', border: '1px solid var(--color-border)', padding: '8px 16px', margin: 0, fontSize: '13px' }}
             >
-              <span>View Ingestion Sources</span>
+              <span>Inspect Findings</span>
+            </button>
+            <button
+              onClick={() => onNavigate('events')}
+              className="nav-item"
+              style={{ width: 'auto', background: 'transparent', border: '1px solid var(--color-border)', padding: '8px 16px', margin: 0, fontSize: '13px' }}
+            >
+              <span>Canonical Events</span>
             </button>
           </div>
         </div>

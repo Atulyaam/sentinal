@@ -29,3 +29,4 @@ __all__ = [
     "compute_finding_id",
     "validate_rule_definition",
 ]
+

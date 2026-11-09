@@ -4,8 +4,10 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import posixpath
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import urllib.parse
 
 from backend.detection.models import Finding, RuleDefinition, compute_rule_config_hash
 
@@ -22,6 +24,69 @@ def compute_finding_id(rule_id: str, rule_version: str, config_hash: str, dedupe
     seed = f"{rule_id}:{rule_version}:{config_hash}:{dedupe_key}".encode("utf-8")
     digest = hashlib.sha256(seed).hexdigest()[:24]
     return f"find_{digest}"
+
+
+def normalize_web_route(raw: str) -> str:
+    """
+    Safely normalize a raw URI/route string for security inspection:
+    - Strips query string and fragments
+    - Handles redundant leading slashes (e.g. //admin -> /admin)
+    - URL unquotes percent-encoded sequences
+    - Resolves redundant slashes and relative path traversal (..)
+    - Returns lowercase normalized path
+    """
+    if not raw or not isinstance(raw, str):
+        return ""
+    cleaned = raw.strip()
+    if "://" in cleaned:
+        try:
+            parts = urllib.parse.urlsplit(cleaned)
+            path = parts.path
+        except Exception:
+            path = cleaned.split("?")[0].split("#")[0]
+    else:
+        path = cleaned.split("?")[0].split("#")[0]
+        if path.startswith("//"):
+            path = "/" + path.lstrip("/")
+
+    if not path:
+        return ""
+
+    unquoted = urllib.parse.unquote(path)
+    normalized = posixpath.normpath(unquoted)
+    if not normalized.startswith("/"):
+        normalized = "/" + normalized
+    return normalized.lower()
+
+
+def is_sensitive_route(target: str, sensitive_routes: List[str]) -> bool:
+    """
+    Determine if a target route matches any configured sensitive route pattern.
+    Handles exact matches, path-prefix matches (/admin/...), and dotfile suffixes (/.env).
+    Prevents false-positive partial matches like /administrator matching /admin.
+    """
+    norm_target = normalize_web_route(target)
+    if not norm_target:
+        return False
+
+    for pattern in sensitive_routes:
+        if not pattern:
+            continue
+        norm_p = normalize_web_route(str(pattern))
+        if not norm_p:
+            continue
+
+        # Exact match (e.g. /admin == /admin)
+        if norm_target == norm_p:
+            return True
+        # Directory prefix match (e.g. /admin/users matches /admin)
+        if norm_target.startswith(norm_p.rstrip("/") + "/"):
+            return True
+        # Dotfile or sub-resource match (e.g. /sub/app/.env matches /.env)
+        if norm_p.startswith("/.") and norm_target.endswith(norm_p):
+            return True
+
+    return False
 
 
 def parse_utc_epoch(iso_ts: str) -> Optional[float]:
@@ -357,7 +422,7 @@ class Web001SensitiveRouteBurstRule(BaseRuleEvaluator):
         if not self.enabled:
             return []
 
-        sensitive_prefixes = [r.lower() for r in self.config.get("sensitive_routes", [])]
+        sensitive_routes = self.config.get("sensitive_routes", [])
         threshold = int(self.config.get("threshold_count", 3))
         window_sec = float(self.config.get("window_seconds", 900))
 
@@ -365,10 +430,12 @@ class Web001SensitiveRouteBurstRule(BaseRuleEvaluator):
         entity_requests: Dict[str, List[Tuple[float, Dict[str, Any]]]] = {}
         for evt in events:
             if evt.get("event_type") == "web_request":
-                resource = (evt.get("target_resource") or "").lower()
-                is_sensitive = any(resource.startswith(prefix) or prefix in resource for prefix in sensitive_prefixes)
-                if is_sensitive:
-                    entity = evt.get("source_ip") or evt.get("user_principal") or "unknown_source"
+                raw_resource = evt.get("target_resource") or ""
+                if is_sensitive_route(raw_resource, sensitive_routes):
+                    # Require an explicit identity or source IP; do not group anonymous disparate traffic
+                    entity = evt.get("source_ip") or evt.get("user_principal")
+                    if not entity:
+                        continue
                     epoch = parse_utc_epoch(evt["timestamp"])
                     if epoch is not None:
                         entity_requests.setdefault(entity, []).append((epoch, evt))
@@ -470,7 +537,9 @@ class Priv001PrivilegeChangeRule(BaseRuleEvaluator):
             action = attrs.get("action") or attrs.get("event") or ""
 
             if evt_type in target_types or action in target_actions:
-                entity = evt.get("user_principal") or evt.get("target_resource") or "unknown_entity"
+                actor = evt.get("user_principal")
+                target_user = attrs.get("target_user") or attrs.get("user") or attrs.get("target") or evt.get("target_resource")
+                entity = target_user or actor or "unknown_entity"
                 dedupe_key = f"priv_change:{evt['event_id']}"
                 finding_id = compute_finding_id(
                     self.rule_id, self.version, self.definition.config_hash, dedupe_key
@@ -493,7 +562,9 @@ class Priv001PrivilegeChangeRule(BaseRuleEvaluator):
                     matched_conditions={
                         "event_type": evt_type,
                         "action": action,
+                        "actor": actor,
                         "target_entity": entity,
+                        "target_user": target_user,
                         "source_ip": evt.get("source_ip"),
                         "event_id": evt["event_id"],
                     },

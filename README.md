@@ -35,19 +35,21 @@ project-sentinel/
 
 ---
 
-## Phase 3 Capabilities (Sprint 3 Complete)
+## Phase 6 Capabilities (Sprint 6 Complete)
 
-Project Sentinel v0.3.0 establishes the canonical normalization engine and immutable evidence provenance:
-1. **Canonical Normalization Engine:** Transforms pre-normalized ingestion records (`parsed_records`) into canonical events conforming to `shared/contracts/event_contract.json`.
-2. **Three Parser Mappers:**
-   - `GenericJsonlMapper`: Resolves candidate timestamp, user principal, source IP, target resource, and outcome keys.
-   - `AuthCsvMapper`: Normalizes authentication credentials and outcomes (`SUCCESS`, `FAILURE`, `LOCKED`, `CHALLENGE`).
-   - `WebAccessCsvMapper`: Normalizes HTTP requests, mapping HTTP status codes (100–399 $\rightarrow$ `SUCCESS`, 400–499 $\rightarrow$ `FAILURE`, 500–599 $\rightarrow$ `ERROR`).
-3. **Deterministic Event Identity:** Formula `evt_` + SHA-256(`source_sha256:record_number:parser_id:norm_version`)[0:24] providing reproducible, collision-resistant event IDs across re-runs.
-4. **Strict Timestamp Normalization:** Mandatory UTC conversion, ISO-8601 UTC output, epoch handling, explicit naive timestamp metadata annotation (`"timezone_inferred": "UTC_ASSUMED"`), and rejection of invalid timestamps without silent `datetime.now()` fallback.
-5. **Database Migration 002:** Added `normalized_events` table with unique constraint on `(record_id, normalization_version)`, indexes on timestamp/type/user/IP, and `normalization_errors` table for structured diagnostic capture of unmappable lines.
-6. **Canonical Events Stream UI:** Interactive `EventsView` in `apps/crew-app` featuring aggregate normalization metrics, filter toolbar, interactive events stream table, and comprehensive Event Inspector drawer detailing immutable SHA-256 provenance and formatted attributes JSON.
-7. **Comprehensive Test Suite:** 68 passing tests across unit, integration, contract, and headless browser runtime verification.
+Project Sentinel v0.6.0 introduces **Claim Guard**: a zero-trust verification boundary for AI-assisted security investigations (*"AI proposes. Deterministic code verifies. The operator decides."*):
+1. **Typed Claim Schema & Vocabulary:** LLMs and automated workflows propose structured JSON claims adhering to a finite set of 8 claim types and approved predicates (`shared/contracts/claim_contract.json`).
+2. **Deterministic 9-Stage Verifier:** Pure Python engine checks claims against SQLite evidence tables: schema validity, template vetting, injection scanning, case containment, mathematical value validation, IP-only identity guardrails, data quality checks, certainty alignment, and safe rendering. Zero LLM self-evaluation.
+3. **Three Explicit Verification Outcomes:**
+   - **`verified`:** Evidence exists in the case and matches claimed values and predicates exactly.
+   - **`qualified`:** Supported by evidence, but carries explicit caveats (e.g. certainty is `inferred` or `hypothesis`, or data quality warnings exist).
+   - **`blocked`:** Evidence is missing, refers to foreign cases (cross-case tampering), contains conflicting values, attempts prompt/script injection, or infers user identity from IP alone. Strictly quarantined in the audit panel and never rendered in the factual narrative.
+4. **Approved Template Catalog with Mandatory HTML Escaping:** Verified and qualified claims render exclusively through vetted parameter substitution templates (`backend/claims/templates.py`) with `html.escape()` applied to all dynamic values.
+5. **Anti-Hallucination & Containment Guardrails:** Categorically blocks claims asserting human identity from IP alone, or referencing evidence outside the target case.
+6. **Signature Demo Moment:** Interactive trigger in the UI (`POST /api/cases/{id}/claims/demo`) generating verified, qualified, and adversarial blocked claims with clear remediation advice.
+7. **SQLite Persistence:** Migration 006 adds `claim_proposals` and `claim_verifications` with cascading foreign keys to `cases(case_id)`.
+8. **Analyst Workspace UI:** Dedicated Claim Guard tab in `CasesView` with real-time metrics, color-coded verified/qualified/blocked panels, clickable evidence chips, and demo trigger.
+9. **169 Automated Tests:** Complete passing suite across unit, contract, integration, security, and headless browser runtime verification.
 
 ### Quickstart
 
@@ -66,6 +68,26 @@ Runs on `http://127.0.0.1:8000`. Endpoints:
 - `GET /api/events`: Query canonical normalized events with dynamic filters.
 - `GET /api/events/{id}`: Inspect single canonical event with full source provenance.
 - `GET /api/normalization/stats`: Pipeline normalization metrics.
+- `GET /api/rules`: Registered detection rules catalogue.
+- `GET /api/rules/{id}`: Single detection rule definition.
+- `PATCH /api/rules/{id}`: Toggle rule enabled state.
+- `POST /api/detection/run`: Execute detection engine evaluation.
+- `GET /api/detection/stats`: Aggregate detection metrics.
+- `GET /api/findings`: Query paginated findings with dynamic filters.
+- `GET /api/findings/{id}`: Inspect single finding with joined supporting evidence events.
+- `PATCH /api/findings/{id}`: Update finding lifecycle status.
+- `GET /api/cases`: Query paginated investigation cases with dynamic filters.
+- `GET /api/cases/stats`: Aggregate case metrics by status and severity.
+- `GET /api/cases/{id}`: Inspect single case with assembled timeline, findings, and events.
+- `POST /api/cases/correlate`: Execute correlation engine run.
+- `POST /api/cases/{id}/review`: Append operator note or execute status transition.
+- `PATCH /api/cases/{id}`: Direct status update validating state machine.
+- `GET /api/claims/templates`: Catalogue of approved Claim Guard templates and claim types.
+- `GET /api/cases/{id}/claims`: List verified, qualified, and blocked claims for a case.
+- `GET /api/claims/{id}`: Inspect single claim detail and verification checks.
+- `POST /api/claims/verify`: Verify and persist custom claim proposals.
+- `POST /api/cases/{id}/claims/demo`: Execute signature Claim Guard demo bundle on a case.
+- `POST /api/cases/{id}/claims/propose`: Propose and verify case-specific claims.
 
 #### 2. Kiro Crew Application UI
 ```powershell
@@ -79,12 +101,12 @@ npm run dev
 ```
 
 #### 3. Run Quality Gates & Tests
-Run all 68 backend tests:
+Run all 169 backend tests:
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Run end-to-end quality gate hook (tests + manifest + build + headless browser):
+Run end-to-end quality gate hook (tests + manifest + build + headless browser + 5 real workflow verification scripts across all 9 gates):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .kiro/hooks/validate-all.ps1
 ```

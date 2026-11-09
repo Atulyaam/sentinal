@@ -274,8 +274,95 @@ class TestRuleEvaluation(unittest.TestCase):
         findings = rule.evaluate(events)
         self.assertEqual(len(findings), 0)
 
+    def test_web001_percent_encoded_and_traversal(self) -> None:
+        """URL percent-encoding, redundant slashes, and path traversal resolve to sensitive routes."""
+        rule = Web001SensitiveRouteBurstRule()
+        base_time = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
+        events = [
+            _make_event(
+                event_id="evt_enc_1",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=10)).isoformat(),
+                status="FAILURE",
+                source_ip="198.51.100.5",
+                target_resource="/%61%64%6d%69%6e/login",
+            ),
+            _make_event(
+                event_id="evt_enc_2",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=20)).isoformat(),
+                status="FAILURE",
+                source_ip="198.51.100.5",
+                target_resource="/foo/../admin/dashboard",
+            ),
+            _make_event(
+                event_id="evt_enc_3",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=30)).isoformat(),
+                status="FAILURE",
+                source_ip="198.51.100.5",
+                target_resource="//admin",
+            ),
+        ]
+        findings = rule.evaluate(events)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].matched_entity, "198.51.100.5")
+        self.assertEqual(len(findings[0].supporting_event_ids), 3)
+
+    def test_web001_false_positive_query_and_prefix(self) -> None:
+        """Query parameters containing sensitive paths or benign word prefixes do not trigger WEB-001."""
+        rule = Web001SensitiveRouteBurstRule()
+        base_time = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
+        events = [
+            _make_event(
+                event_id="evt_fp_1",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=10)).isoformat(),
+                status="SUCCESS",
+                source_ip="198.51.100.99",
+                target_resource="/search?q=/admin",
+            ),
+            _make_event(
+                event_id="evt_fp_2",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=20)).isoformat(),
+                status="SUCCESS",
+                source_ip="198.51.100.99",
+                target_resource="/administrator",
+            ),
+            _make_event(
+                event_id="evt_fp_3",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=30)).isoformat(),
+                status="SUCCESS",
+                source_ip="198.51.100.99",
+                target_resource="/docs/how-to-administer-system",
+            ),
+        ]
+        findings = rule.evaluate(events)
+        self.assertEqual(len(findings), 0)
+
+    def test_web001_anonymous_missing_identity(self) -> None:
+        """Requests without source_ip or user_principal cannot be attributed to a single entity burst."""
+        rule = Web001SensitiveRouteBurstRule()
+        base_time = datetime(2026, 11, 9, 12, 0, 0, tzinfo=timezone.utc)
+        events = [
+            _make_event(
+                event_id=f"evt_anon_{i}",
+                event_type="web_request",
+                timestamp=(base_time + timedelta(seconds=i * 10)).isoformat(),
+                status="FAILURE",
+                source_ip="",
+                user_principal=None,
+                target_resource="/admin",
+            )
+            for i in range(5)
+        ]
+        findings = rule.evaluate(events)
+        self.assertEqual(len(findings), 0)
+
     def test_priv001_positive(self) -> None:
-        """Explicit role alteration triggers PRIV-001 finding immediately."""
+        """Explicit role alteration triggers PRIV-001 finding immediately with actor and target separated."""
         rule = Priv001PrivilegeChangeRule()
         events = [
             _make_event(
@@ -294,6 +381,8 @@ class TestRuleEvaluation(unittest.TestCase):
         self.assertEqual(finding.rule_id, "PRIV-001")
         self.assertEqual(finding.severity, "High")
         self.assertIn("evt_priv_1", finding.supporting_event_ids)
+        self.assertEqual(finding.matched_conditions["actor"], "secops_admin")
+        self.assertEqual(finding.matched_conditions["target_user"], "bob")
 
     def test_ingest001_future_dated_event(self) -> None:
         """Events with timestamps > 24 hours into the future trigger INGEST-001."""

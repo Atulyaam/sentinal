@@ -5,6 +5,56 @@ All notable changes to Project Sentinel will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-09 (Phase 6: Claim Guard: Typed AI Claims, Deterministic Verification & Safe Rendering)
+### Added
+- **Typed AI Claims Schema & Contract:** Created `shared/contracts/claim_contract.json` specifying a finite vocabulary of 8 claim types (`event_count`, `finding_exists`, `rule_match`, `time_window`, `entity_observed`, `case_status`, `correlation_relationship`, `data_quality_issue`) and strict predicates.
+- **Core Claim Models:** Implemented `ClaimProposal`, `VerificationCheck`, and `ClaimVerificationResult` dataclasses (`backend/claims/models.py`) with strict schema validation and string length enforcement.
+- **Approved Template Catalog:** Defined `APPROVED_TEMPLATES` (`backend/claims/templates.py`) providing 8 vetted templates with required parameters for rendering factual and qualified statements.
+- **Safe Claim Renderer:** Implemented `SafeClaimRenderer` (`backend/claims/renderer.py`) enforcing HTML entity escaping via `html.escape()`, prefixing `[QUALIFIED]` caveats, and strictly quarantining blocked claims (`[BLOCKED CLAIM]`) with failure reasons and remedies.
+- **Deterministic 9-Stage Verifier:** Implemented `ClaimVerifier` (`backend/claims/verifier.py`) executing schema check, template vetting, injection scanning, case containment, mathematical value validation, IP-only identity guardrails, data quality checks, certainty alignment, and safe rendering without LLM self-evaluation.
+- **Claim Guard Orchestration Engine:** Implemented `ClaimGuardEngine` (`backend/claims/engine.py`) orchestrating batch claim processing, SQLite persistence, and the signature "Claim Guard Demo Moment" (`generate_demo_claims`).
+- **Database Migration 006:** Added `claim_proposals` and `claim_verifications` tables with cascading foreign keys to `cases(case_id)` and fast query indexes (`backend/persistence/migrations.py`).
+- **Repository Integration:** Added `persist_claim_proposal`, `persist_claim_verification`, `get_claim`, `list_case_claims`, and `list_all_claims` (`backend/persistence/repository.py`). Updated `get_case(case_id)` to embed verified claims.
+- **REST API Endpoints:** Added `POST /api/claims/verify`, `POST /api/cases/{id}/claims/demo`, `POST /api/cases/{id}/claims/propose`, `GET /api/claims/templates`, `GET /api/cases/{id}/claims`, and `GET /api/claims/{id}` (`backend/api/handler.py`).
+- **Analyst Workspace UI:** Built a dedicated Claim Guard tab in `CasesView.tsx` with real-time metrics cards, verified/qualified/blocked panels, clickable evidence chips, and the interactive demo trigger.
+- **Kiro Skill Update:** Updated `apps/crew-app/skills/evidence-led-investigation/SKILL.md` with Claim Guard JSON schema, approved templates, and operational guardrails.
+- **Automated Test Suites:** Added `test_claim_models.py`, `test_claim_verifier.py`, `test_claim_security.py`, `test_claims_api.py`, and `test_e2e_claims.py`, expanding test suite to 169 passing tests (0 failures, 0 errors, 0 skipped).
+- **Real Workflow Verification Script:** Added `scripts/verify_real_claim_guard_workflow.py` testing multi-source log import, normalization, detection, correlation, demo execution, adversarial injection tests, and direct SQLite foreign-key auditing.
+- **Documentation:** Created `docs/PHASE_6_CLAIM_GUARD_DESIGN.md`, `docs/PHASE_6_IMPLEMENTATION_REPORT.md`, `docs/PHASE_6_TEST_REPORT.md`, and updated `docs/threat-model.md` and `docs/kiro-usage.md`.
+
+## [0.5.0] - 2026-11-09 (Phase 5: Investigation Cases, Deterministic Correlation & Timeline)
+### Added
+- **Deterministic Correlation Engine:** Implemented `CorrelationEngine` (`backend/cases/engine.py`) that clusters related security findings and canonical events into unified cases using approved identity keys (`user_principal`, `session_id`, `request_id`) and temporal observation windows (default 3600 seconds).
+- **IP-Only Correlation Guardrail:** Disabled IP-only grouping by default (`enable_ip_correlation = False`) to prevent catastrophic false clustering across shared NAT, proxies, and mobile cellular networks. Source IP is preserved as contextual network evidence only.
+- **Deterministic Case Identity Derivation:** Collision-resistant case ID derivation `case_` + SHA256(`key_type:key_value:window_bucket`)[0:20].
+- **Transparent Severity Derivation:** Transparent derivation of case severity as the maximum severity of linked findings, recording an explicit rationale.
+- **Unified Chronological Evidence Timeline:** Dynamically merges canonical events, detection findings, correlation summaries, and operator review actions into a strict UTC chronological sequence (`backend/persistence/repository.py`).
+- **Database Migration 005:** Added `cases` table with unique constraint `uq_case_dedupe (correlation_key_type, correlation_key_value, dedupe_key)`, `case_findings` junction table, `case_events` junction table, `review_actions` append-only audit log table, and `correlation_evaluations` performance table (`backend/persistence/migrations.py`).
+- **Append-Only Analyst Review Log:** Capture of operator triage notes, decisions, and status transitions in `review_actions` without mutating original evidence.
+- **Strict State Machine Lifecycle Validation:** Enforced transitions across `Open`, `UnderReview`, `NeedsMoreEvidence`, `Resolved`, and `Dismissed` (`backend/cases/models.py`). Illegal transitions raise immediate validation errors.
+- **REST API Endpoints:** Added `GET /api/cases`, `GET /api/cases/stats`, `GET /api/cases/{id}`, `POST /api/cases/correlate`, `POST /api/cases/{id}/review`, and `PATCH /api/cases/{id}` (`backend/api/handler.py`).
+- **Interactive Cases UI:** Activated `CasesView` in `apps/crew-app` featuring summary metrics bar, correlation execution button, dynamic search and filters, cases table, and deep-dive drawer with unified timeline, finding condition inspect modal, and review action submission.
+- **Automated Test Suites:** Added `test_correlation_engine.py`, `test_cases_db.py`, `test_cases_api.py`, and `test_e2e_cases.py`, bringing total platform tests to 128 passing tests.
+- **Real Workflow Verification Script:** Added `scripts/verify_real_case_workflow.py` testing multi-source log import, normalization, detection, correlation, analyst review, direct SQLite verification, and re-evaluation idempotency.
+- **Documentation:** Created `docs/PHASE_5_CASE_DESIGN.md`, `docs/PHASE_5_IMPLEMENTATION_REPORT.md`, `docs/PHASE_5_TEST_REPORT.md`, `docs/cases.md`, and `docs/correlation.md`.
+
+## [0.4.0] - 2026-11-09 (Phase 4: Deterministic Detection Rules & Explainable Findings)
+### Added
+- **Deterministic Detection Engine:** Implemented chronological sliding-window detection orchestrator (`backend/detection/engine.py`) evaluating canonical events against versioned rules without machine learning or probabilistic guessing.
+- **5 Built-in Detection Rules:**
+  - `AUTH-001` (Repeated Authentication Failures): 5 failures within 10 minutes.
+  - `AUTH-002` (Success After Failures): Successful login within 30 minutes following an `AUTH-001` burst.
+  - `WEB-001` (Sensitive Route Burst): 3 requests to sensitive endpoints within 15 minutes.
+  - `PRIV-001` (Explicit Privilege Escalation): Direct detection of administrative role alterations and grants.
+  - `INGEST-001` (Data Quality Anomaly): Detection of future-dated events and quarantined normalization records.
+- **Deterministic Finding Identity:** Collision-resistant SHA-256 derivation `find_` + SHA256(`rule_id:version:config_hash:dedupe_key`)[0:24].
+- **Database Migration 004:** Added `detection_rules` table (seeded with all 5 default rules), `findings` table with `uq_finding_dedupe UNIQUE (rule_id, rule_version, dedupe_key)`, `finding_events` junction table with `FOREIGN KEY (event_id) REFERENCES normalized_events(event_id) ON DELETE RESTRICT`, `rule_evaluations` audit table, and performance indexes (`backend/persistence/migrations.py`).
+- **Relational Findings Repository:** High-performance persistence methods (`backend/persistence/repository.py`) supporting atomic batch persistence (`INSERT OR IGNORE`), duplicate tracking, foreign-key evidence joining, dynamic filtering, pagination, and status management.
+- **REST API Endpoints:** Added `GET /api/rules`, `GET /api/rules/{id}`, `PATCH /api/rules/{id}`, `POST /api/detection/run`, `GET /api/detection/stats`, `GET /api/findings`, `GET /api/findings/{id}`, and `PATCH /api/findings/{id}` (`backend/api/handler.py`).
+- **Interactive Findings UI:** Activated `FindingsView` in `apps/crew-app` featuring summary metrics bar, detection engine trigger, severity/status filters, detailed inspection drawer with joined evidence events, and rules catalogue modal with toggle switches.
+- **Automated Test Suites:** Added `test_rule_validation.py`, `test_rule_evaluation.py`, `test_findings_db.py`, `test_findings_api.py`, `test_detection_security.py`, and `test_e2e_detection.py`, bringing total platform tests to 107 passing tests.
+- **Specifications & Documentation:** Created `docs/PHASE_4_DETECTION_DESIGN.md`, `docs/PHASE_4_IMPLEMENTATION_REPORT.md`, `docs/PHASE_4_TEST_REPORT.md`, `docs/detection-rules.md`, `docs/findings.md`, and updated `docs/threat-model.md`.
+
 ## [0.3.0] - 2026-11-09 (Phase 3: Canonical Event Normalization, Provenance & Data Integrity)
 ### Added
 - **Canonical Event Normalization Engine:** Implemented deterministic transformation engine (`backend/normalization/engine.py`) converting pre-normalized records into canonical `NormalizedEventContract` instances.

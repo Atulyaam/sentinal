@@ -84,8 +84,8 @@ def main() -> None:
     backend_proc = subprocess.Popen(
         [sys.executable, "-m", "backend.api.server"],
         cwd=str(ROOT_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         text=True,
     )
 
@@ -112,8 +112,8 @@ def main() -> None:
         print("\n--> [Test 2/5] Testing all 8 navigation routes in browser runtime...")
         routes_to_test = [
             ("overview", "Welcome to Project Sentinel"),
-            ("investigations", "Investigations Module"),
-            ("findings", "Findings Module"),
+            ("investigations", "Investigation Cases"),
+            ("findings", "Deterministic Findings"),
             ("events", "Canonical Events"),
             ("replay", "Replay Lab Module"),
             ("sources", "Data Ingestion"),
@@ -136,13 +136,30 @@ def main() -> None:
         assert "Timestamp (UTC)" in events_dom, "Expected table headers in Events view"
         print("    [PASS] Events view verified: controls, metrics bar, and canonical table present.")
 
+        # Verify Findings view specific components
+        print("\n--> [Test 3b/5] Verifying Findings view interactive controls and detection engine triggers...")
+        findings_dom = run_headless_browser(browser_exe, "http://127.0.0.1:4173/?view=findings")
+        assert "Deterministic Findings" in findings_dom, "Expected 'Deterministic Findings' in Findings view"
+        assert "Run Detection Engine" in findings_dom, "Expected 'Run Detection Engine' button in Findings view"
+        assert "Rules Catalogue" in findings_dom, "Expected 'Rules Catalogue' button in Findings view"
+        assert "Total Findings" in findings_dom, "Expected 'Total Findings' metric card in Findings view"
+        print("    [PASS] Findings view verified: metrics bar, engine triggers, and rules catalogue button present.")
+
         # Verify Sources view specific components
-        print("\n--> [Test 3b/5] Verifying Sources view interactive controls and genuine history...")
+        print("\n--> [Test 3c/5] Verifying Sources view interactive controls and genuine history...")
         sources_dom = run_headless_browser(browser_exe, "http://127.0.0.1:4173/?view=sources")
         assert "Configured Event Sources" in sources_dom, "Expected 'Configured Event Sources' in Sources view"
         assert "Manual Log Import" in sources_dom, "Expected 'Manual Log Import' in Sources view"
         assert "Persisted Import History" in sources_dom, "Expected 'Persisted Import History' in Sources view"
         print("    [PASS] Sources view verified: controls, event sources, and history table present.")
+
+        # Verify Investigations (Cases) view specific components
+        print("\n--> [Test 3d/5] Verifying Investigations/Cases view interactive controls and correlation triggers...")
+        cases_dom = run_headless_browser(browser_exe, "http://127.0.0.1:4173/?view=investigations")
+        assert "Investigation Cases" in cases_dom, "Expected 'Investigation Cases' in Cases view"
+        assert "Run Correlation Engine" in cases_dom, "Expected 'Run Correlation Engine' button in Cases view"
+        assert "Open Cases" in cases_dom, "Expected 'Open Cases' metric card in Cases view"
+        print("    [PASS] Investigations/Cases view verified: metrics bar, correlation triggers, and case table present.")
 
         # STEP 4: Verify Offline / Backend Disconnected State
         print("\n--> [Test 4/5] Testing Backend Disconnect and Offline Error State...")
@@ -163,8 +180,8 @@ def main() -> None:
         backend_proc = subprocess.Popen(
             [sys.executable, "-m", "backend.api.server"],
             cwd=str(ROOT_DIR),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
         if not wait_for_url("http://127.0.0.1:8000/health"):

@@ -54,4 +54,36 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# 6. Real normalization workflow verification
+Write-Host "--> Running Real Normalization & Provenance Workflow Verification..." -ForegroundColor Yellow
+python scripts/verify_real_normalization_workflow.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Real normalization and provenance workflow verification failed!"
+    exit 1
+}
+
+# 7. Real detection & findings workflow verification
+Write-Host "--> Running Real Detection & Findings Workflow Verification..." -ForegroundColor Yellow
+python scripts/verify_real_detection_workflow.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Real detection and findings workflow verification failed!"
+    exit 1
+}
+
+# 8. Real case correlation & review workflow verification
+Write-Host "--> Running Real Case Correlation & Review Workflow Verification..." -ForegroundColor Yellow
+python scripts/verify_real_case_workflow.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Real case correlation and review workflow verification failed!"
+    exit 1
+}
+
+# 9. Real Claim Guard workflow verification
+Write-Host "--> Running Real Claim Guard Workflow Verification..." -ForegroundColor Yellow
+python scripts/verify_real_claim_guard_workflow.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Real Claim Guard workflow verification failed!"
+    exit 1
+}
+
 Write-Host "==> [Hook] All Quality Gates Passed Cleanly!" -ForegroundColor Green

@@ -1,0 +1,49 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "InvestigationCaseContract",
+  "type": "object",
+  "required": [
+    "case_id",
+    "title",
+    "description",
+    "status",
+    "severity",
+    "correlation_key_type",
+    "correlation_key_value",
+    "first_observed_at",
+    "last_observed_at",
+    "algorithm_version",
+    "dedupe_key"
+  ],
+  "properties": {
+    "case_id": { "type": "string" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["Open", "UnderReview", "NeedsMoreEvidence", "Resolved", "Dismissed"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["Critical", "High", "Medium", "Low", "Info"]
+    },
+    "correlation_key_type": { "type": "string" },
+    "correlation_key_value": { "type": "string" },
+    "first_observed_at": { "type": "string", "format": "date-time" },
+    "last_observed_at": { "type": "string", "format": "date-time" },
+    "algorithm_version": { "type": "string" },
+    "dedupe_key": { "type": "string" },
+    "metadata": { "type": "object" },
+    "linked_finding_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "linked_event_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" }
+  }
+}
+

@@ -192,3 +192,140 @@ export interface DetectionRule {
   created_at?: string;
   updated_at?: string;
 }
+
+export type CaseStatus = 'Open' | 'UnderReview' | 'NeedsMoreEvidence' | 'Resolved' | 'Dismissed';
+export type CaseSeverity = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
+
+export interface ReviewAction {
+  action_id: string;
+  case_id: string;
+  action_type: string;
+  previous_status?: string | null;
+  new_status?: string | null;
+  operator_note: string;
+  author: string;
+  created_at: string;
+}
+
+export interface TimelineItem {
+  item_id: string;
+  item_type: 'event' | 'finding' | 'correlation' | 'review_action' | 'status_change';
+  timestamp: string;
+  title: string;
+  description: string;
+  severity?: string | null;
+  data?: Record<string, any>;
+}
+
+export interface Case {
+  case_id: string;
+  title: string;
+  description: string;
+  status: CaseStatus;
+  severity: CaseSeverity;
+  correlation_key_type: string;
+  correlation_key_value: string;
+  first_observed_at: string;
+  last_observed_at: string;
+  algorithm_version: string;
+  dedupe_key: string;
+  metadata?: Record<string, any>;
+  finding_count?: number;
+  event_count?: number;
+  review_count?: number;
+  findings?: Finding[];
+  events?: NormalizedEvent[];
+  timeline?: TimelineItem[];
+  review_actions?: ReviewAction[];
+  claims?: ClaimVerificationResult[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CaseStats {
+  total_cases: number;
+  cases_by_status: Record<string, number>;
+  cases_by_severity: Record<string, number>;
+  last_evaluation?: {
+    evaluation_id: string;
+    evaluated_at: string;
+    findings_scanned: number;
+    events_scanned: number;
+    cases_created: number;
+    cases_updated: number;
+    duration_ms: number;
+  } | null;
+}
+
+export type ClaimType =
+  | 'event_count'
+  | 'finding_exists'
+  | 'rule_match'
+  | 'time_window'
+  | 'entity_observed'
+  | 'case_status'
+  | 'correlation_relationship'
+  | 'data_quality_issue';
+
+export type VerificationStatus = 'verified' | 'qualified' | 'blocked';
+export type ClaimCertainty = 'observed' | 'inferred' | 'hypothesis';
+
+export interface VerificationCheck {
+  name: string;
+  passed: boolean;
+  reason: string;
+}
+
+export interface ClaimProposal {
+  claim_id: string;
+  case_id: string;
+  claim_type: ClaimType;
+  predicate: string;
+  value: Record<string, any>;
+  evidence_refs: string[];
+  certainty?: ClaimCertainty;
+  template_id: string;
+  proposed_by?: string;
+  created_at?: string;
+}
+
+export interface ClaimVerificationResult {
+  verification_id: string;
+  claim_id: string;
+  case_id: string;
+  status: VerificationStatus;
+  verification_version: string;
+  checks: VerificationCheck[];
+  rendered_text: string;
+  qualification_notes?: string[];
+  blocked_reasons?: string[];
+  suggested_remedy?: string | null;
+  evidence_refs: string[];
+  verified_at: string;
+  claim_type?: ClaimType;
+  predicate?: string;
+  value?: Record<string, any>;
+  certainty?: ClaimCertainty;
+  template_id?: string;
+  proposed_by?: string;
+}
+
+export interface ClaimVerificationReport {
+  case_id: string;
+  verification_version: string;
+  total_claims: number;
+  verified_count: number;
+  qualified_count: number;
+  blocked_count: number;
+  results: ClaimVerificationResult[];
+}
+
+export interface ClaimTemplate {
+  template_id: string;
+  claim_type: string;
+  description: string;
+  format: string;
+  required_params: string[];
+}
+
+

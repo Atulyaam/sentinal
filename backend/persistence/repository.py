@@ -697,6 +697,23 @@ class IngestionRepository:
         else:
             finding_dict["supporting_events"] = []
 
+        # If rule INGEST-001 or no supporting normalized events, check if matched_conditions has quarantined record_ids
+        record_ids = finding_dict.get("matched_conditions", {}).get("record_ids", [])
+        if record_ids:
+            placeholders = ",".join("?" for _ in record_ids)
+            cursor.execute(
+                f"""
+                SELECT error_id, record_id, import_id, record_number, error_code, safe_error_message, created_at
+                FROM normalization_errors
+                WHERE record_id IN ({placeholders})
+                ORDER BY created_at ASC;
+                """,
+                tuple(record_ids),
+            )
+            finding_dict["quarantined_records"] = [dict(r) for r in cursor.fetchall()]
+        else:
+            finding_dict["quarantined_records"] = []
+
         return finding_dict
 
     def list_findings(
@@ -912,6 +929,909 @@ class IngestionRepository:
             (1 if enabled else 0, now, rule_id),
         )
         return cursor.rowcount > 0
+
+    # ---------------------------------------------------------
+    # Investigation Cases & Deterministic Correlation (Phase 5)
+    # ---------------------------------------------------------
+
+    def persist_cases_batch(
+        self,
+        cases: List[Any],
+        case_findings: List[Any],
+        case_events: List[Any],
+        relationships: Optional[List[Any]] = None,
+    ) -> Dict[str, int]:
+        """Atomically persist or update a batch of correlated investigation cases."""
+        now = datetime.now(timezone.utc).isoformat()
+        created = 0
+        updated = 0
+
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            for c in cases:
+                c_dict = c.to_dict() if hasattr(c, "to_dict") else dict(c)
+                meta_json = json.dumps(c_dict.get("metadata", {}), ensure_ascii=False)
+
+                # Check if case exists with matching dedupe_key
+                cursor = self.conn.execute(
+                    """
+                    SELECT case_id, severity, status
+                    FROM cases
+                    WHERE correlation_key_type = ? AND correlation_key_value = ? AND dedupe_key = ?;
+                    """,
+                    (c_dict["correlation_key_type"], c_dict["correlation_key_value"], c_dict["dedupe_key"]),
+                )
+                existing = cursor.fetchone()
+
+                if existing:
+                    existing_case_id = existing[0]
+                    existing_severity = existing[1]
+                    from backend.cases.models import SEVERITY_RANK
+                    target_sev = c_dict["severity"]
+                    if SEVERITY_RANK.get(existing_severity, 0) > SEVERITY_RANK.get(target_sev, 0):
+                        target_sev = existing_severity
+
+                    # Update boundaries, metadata, updated_at, and severity (do not overwrite status!)
+                    self.conn.execute(
+                        """
+                        UPDATE cases
+                        SET first_observed_at = MIN(first_observed_at, ?),
+                            last_observed_at = MAX(last_observed_at, ?),
+                            description = ?,
+                            updated_at = ?,
+                            metadata_json = ?,
+                            severity = ?
+                        WHERE case_id = ?;
+                        """,
+                        (c_dict["first_observed_at"], c_dict["last_observed_at"], c_dict["description"], now, meta_json, target_sev, existing_case_id),
+                    )
+                    target_case_id = existing_case_id
+                    updated += 1
+                else:
+                    self.conn.execute(
+                        """
+                        INSERT INTO cases (
+                            case_id, title, description, status, severity,
+                            correlation_key_type, correlation_key_value,
+                            first_observed_at, last_observed_at, algorithm_version,
+                            dedupe_key, metadata_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        (
+                            c_dict["case_id"],
+                            c_dict["title"],
+                            c_dict["description"],
+                            c_dict.get("status", "Open"),
+                            c_dict["severity"],
+                            c_dict["correlation_key_type"],
+                            c_dict["correlation_key_value"],
+                            c_dict["first_observed_at"],
+                            c_dict["last_observed_at"],
+                            c_dict.get("algorithm_version", "1.0.0"),
+                            c_dict["dedupe_key"],
+                            meta_json,
+                            now,
+                            now,
+                        ),
+                    )
+                    target_case_id = c_dict["case_id"]
+                    created += 1
+
+                # Link findings
+                for cf in case_findings:
+                    cf_dict = cf.to_dict() if hasattr(cf, "to_dict") else dict(cf)
+                    if cf_dict["case_id"] == c_dict["case_id"]:
+                        self.conn.execute(
+                            """
+                            INSERT OR IGNORE INTO case_findings (case_id, finding_id, correlation_rationale, created_at)
+                            VALUES (?, ?, ?, ?);
+                            """,
+                            (target_case_id, cf_dict["finding_id"], cf_dict["correlation_rationale"], now),
+                        )
+
+                # Link events
+                for ce in case_events:
+                    ce_dict = ce.to_dict() if hasattr(ce, "to_dict") else dict(ce)
+                    if ce_dict["case_id"] == c_dict["case_id"]:
+                        self.conn.execute(
+                            """
+                            INSERT OR IGNORE INTO case_events (case_id, event_id, relationship_type, correlation_rationale, created_at)
+                            VALUES (?, ?, ?, ?, ?);
+                            """,
+                            (
+                                target_case_id,
+                                ce_dict["event_id"],
+                                ce_dict.get("relationship_type", "correlated_evidence"),
+                                ce_dict["correlation_rationale"],
+                                now,
+                            ),
+                        )
+
+            self.conn.execute("COMMIT;")
+        except Exception:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+        return {"cases_created": created, "cases_updated": updated}
+
+    def get_case(self, case_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a complete investigation case with findings, events, timeline, and review history."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT case_id, title, description, status, severity,
+                   correlation_key_type, correlation_key_value,
+                   first_observed_at, last_observed_at, algorithm_version,
+                   dedupe_key, metadata_json, created_at, updated_at
+            FROM cases
+            WHERE case_id = ?;
+            """,
+            (case_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        case_dict = dict(row)
+        meta_raw = case_dict.pop("metadata_json", "{}")
+        try:
+            case_dict["metadata"] = json.loads(meta_raw)
+        except Exception:
+            case_dict["metadata"] = {}
+        case_dict["correlation_rationale"] = case_dict["metadata"].get("correlation_rationale", "")
+
+        # 1. Fetch linked findings with full details and supporting events
+        cursor.execute(
+            """
+            SELECT f.finding_id, f.rule_id, f.rule_version, f.rule_config_hash,
+                   f.severity, f.status, f.title, f.description,
+                   f.first_observed_at, f.last_observed_at, f.matched_entity,
+                   f.matched_conditions_json, f.supporting_event_ids_json,
+                   f.limitations, f.dedupe_key, cf.correlation_rationale
+            FROM case_findings cf
+            JOIN findings f ON cf.finding_id = f.finding_id
+            WHERE cf.case_id = ?
+            ORDER BY f.first_observed_at ASC;
+            """,
+            (case_id,),
+        )
+        findings = []
+        for f_row in cursor.fetchall():
+            f_item = dict(f_row)
+            try:
+                f_item["matched_conditions"] = json.loads(f_item.pop("matched_conditions_json", "{}"))
+            except Exception:
+                f_item["matched_conditions"] = {}
+            try:
+                f_item["supporting_event_ids"] = json.loads(f_item.pop("supporting_event_ids_json", "[]"))
+            except Exception:
+                f_item["supporting_event_ids"] = []
+            findings.append(f_item)
+        case_dict["findings"] = findings
+
+        # 2. Fetch linked events with full canonical provenance
+        cursor.execute(
+            """
+            SELECT ne.event_id, ne.timestamp, ne.source_type, ne.source_file,
+                   ne.source_line, ne.source_sha256, ne.event_type,
+                   ne.user_principal, ne.source_ip, ne.target_resource,
+                   ne.status, ne.attributes_json, ce.relationship_type,
+                   ce.correlation_rationale
+            FROM case_events ce
+            JOIN normalized_events ne ON ce.event_id = ne.event_id
+            WHERE ce.case_id = ?
+            ORDER BY ne.timestamp ASC;
+            """,
+            (case_id,),
+        )
+        events = []
+        for e_row in cursor.fetchall():
+            e_item = dict(e_row)
+            try:
+                e_item["attributes"] = json.loads(e_item.pop("attributes_json", "{}"))
+            except Exception:
+                e_item["attributes"] = {}
+            events.append(e_item)
+        case_dict["events"] = events
+
+        # 3. Fetch review actions
+        cursor.execute(
+            """
+            SELECT action_id, case_id, action_type, previous_status,
+                   new_status, operator_note, author, created_at
+            FROM review_actions
+            WHERE case_id = ?
+            ORDER BY created_at ASC;
+            """,
+            (case_id,),
+        )
+        reviews = [dict(r) for r in cursor.fetchall()]
+        case_dict["review_actions"] = reviews
+
+        # 4. Assemble chronological timeline
+        timeline: List[Dict[str, Any]] = []
+
+        # Add events to timeline
+        for ev in events:
+            timeline.append({
+                "item_id": f"tl_evt_{ev['event_id']}",
+                "item_type": "event",
+                "timestamp": ev["timestamp"],
+                "title": f"Canonical Event: {ev['event_type']} ({ev['status']})",
+                "description": f"Source: {ev['source_file']}:{ev['source_line']} | User: {ev.get('user_principal') or 'none'} | IP: {ev.get('source_ip') or 'none'} | Target: {ev.get('target_resource') or 'none'}",
+                "severity": None,
+                "data": ev,
+            })
+
+        # Add findings to timeline
+        for f in findings:
+            timeline.append({
+                "item_id": f"tl_find_{f['finding_id']}",
+                "item_type": "finding",
+                "timestamp": f["first_observed_at"],
+                "title": f"Detection: [{f['rule_id']}] {f['title']}",
+                "description": f"{f['description']} (Severity: {f['severity']}, Entity: {f.get('matched_entity') or 'none'})",
+                "severity": f["severity"],
+                "data": f,
+            })
+
+        # Add review actions & status changes to timeline
+        for rev in reviews:
+            if rev["action_type"] == "status_changed":
+                t_title = f"Status Changed: {rev['previous_status']} -> {rev['new_status']}"
+                t_desc = f"Operator: {rev['author']}"
+                if rev["operator_note"]:
+                    t_desc += f" — Note: {rev['operator_note']}"
+                timeline.append({
+                    "item_id": f"tl_act_{rev['action_id']}",
+                    "item_type": "status_change",
+                    "timestamp": rev["created_at"],
+                    "title": t_title,
+                    "description": t_desc,
+                    "severity": None,
+                    "data": rev,
+                })
+            else:
+                timeline.append({
+                    "item_id": f"tl_act_{rev['action_id']}",
+                    "item_type": "review_action",
+                    "timestamp": rev["created_at"],
+                    "title": f"Operator Note by {rev['author']}",
+                    "description": rev["operator_note"],
+                    "severity": None,
+                    "data": rev,
+                })
+
+        # Add correlation summary to timeline
+        if case_dict.get("metadata", {}).get("correlation_rationale"):
+            timeline.append({
+                "item_id": f"tl_corr_{case_dict['case_id']}",
+                "item_type": "correlation",
+                "timestamp": case_dict["first_observed_at"],
+                "title": f"Deterministic Correlation [{case_dict['correlation_key_type']}={case_dict['correlation_key_value']}]",
+                "description": case_dict["metadata"]["correlation_rationale"],
+                "severity": case_dict["severity"],
+                "data": {
+                    "key_type": case_dict["correlation_key_type"],
+                    "key_value": case_dict["correlation_key_value"],
+                    "window_seconds": case_dict["metadata"].get("window_seconds"),
+                    "algorithm_version": case_dict["algorithm_version"],
+                    "severity_derivation": case_dict["metadata"].get("severity_derivation"),
+                },
+            })
+
+        # Sort timeline chronologically with deterministic logical tiebreaker
+        timeline_type_order = {
+            "event": 1,
+            "finding": 2,
+            "correlation": 3,
+            "status_change": 4,
+            "review_action": 5,
+        }
+        timeline.sort(
+            key=lambda item: (
+                item.get("timestamp") or "",
+                timeline_type_order.get(item.get("item_type"), 99),
+                item.get("item_id", ""),
+            )
+        )
+        case_dict["timeline"] = timeline
+
+        # 5. Fetch verified, qualified and blocked claims for case (Phase 6)
+        try:
+            case_dict["claims"] = self.list_case_claims(case_id)
+        except Exception:
+            case_dict["claims"] = []
+
+        return case_dict
+
+    def list_cases(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        correlation_key_type: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List cases with optional filtering, pagination, search, and evidence counts."""
+        cursor = self.conn.cursor()
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if status:
+            where_clauses.append("c.status = ?")
+            params.append(status)
+        if severity:
+            where_clauses.append("c.severity = ?")
+            params.append(severity)
+        if correlation_key_type:
+            where_clauses.append("c.correlation_key_type = ?")
+            params.append(correlation_key_type)
+        if search and str(search).strip():
+            s = f"%{str(search).strip()}%"
+            where_clauses.append("(c.title LIKE ? OR c.case_id LIKE ? OR c.correlation_key_value LIKE ?)")
+            params.extend([s, s, s])
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        # Total count query
+        count_query = f"SELECT COUNT(*) FROM cases c {where_sql};"
+        cursor.execute(count_query, tuple(params))
+        total_count = cursor.fetchone()[0]
+
+        # Data query with counts of linked findings and events
+        data_query = f"""
+            SELECT c.case_id, c.title, c.description, c.status, c.severity,
+                   c.correlation_key_type, c.correlation_key_value,
+                   c.first_observed_at, c.last_observed_at, c.algorithm_version,
+                   c.dedupe_key, c.metadata_json, c.created_at, c.updated_at,
+                   (SELECT COUNT(*) FROM case_findings cf WHERE cf.case_id = c.case_id) AS finding_count,
+                   (SELECT COUNT(*) FROM case_events ce WHERE ce.case_id = c.case_id) AS event_count,
+                   (SELECT COUNT(*) FROM review_actions ra WHERE ra.case_id = c.case_id) AS review_count
+            FROM cases c
+            {where_sql}
+            ORDER BY c.updated_at DESC
+            LIMIT ? OFFSET ?;
+        """
+        data_params = list(params) + [limit, offset]
+        cursor.execute(data_query, tuple(data_params))
+
+        cases: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json", "{}"))
+            except Exception:
+                item["metadata"] = {}
+            cases.append(item)
+
+        return cases, total_count
+
+    def update_case_status(
+        self,
+        case_id: str,
+        new_status: str,
+        operator_note: str = "",
+        author: str = "secops_operator",
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and apply a case status transition, appending an immutable review action."""
+        if operator_note and len(str(operator_note)) > 10000:
+            raise ValueError("Operator note exceeds maximum allowed length of 10,000 characters.")
+        if author and len(str(author)) > 100:
+            raise ValueError("Author exceeds maximum allowed length of 100 characters.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT status FROM cases WHERE case_id = ?;", (case_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        current_status = row[0]
+        from backend.cases.models import validate_status_transition
+        validate_status_transition(current_status, new_status)
+
+        now = datetime.now(timezone.utc).isoformat()
+        act_id = f"act_{uuid.uuid4().hex[:16]}"
+
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.execute(
+                "UPDATE cases SET status = ?, updated_at = ? WHERE case_id = ?;",
+                (new_status, now, case_id),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO review_actions (
+                    action_id, case_id, action_type, previous_status,
+                    new_status, operator_note, author, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    act_id,
+                    case_id,
+                    "status_changed",
+                    current_status,
+                    new_status,
+                    operator_note or f"Status transitioned from {current_status} to {new_status}",
+                    author,
+                    now,
+                ),
+            )
+            self.conn.execute("COMMIT;")
+        except Exception:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+        return self.get_case(case_id)
+
+    def add_case_note(
+        self,
+        case_id: str,
+        operator_note: str,
+        author: str = "secops_operator",
+    ) -> Optional[Dict[str, Any]]:
+        """Append an operator note to a case without changing status."""
+        if not operator_note or not str(operator_note).strip():
+            raise ValueError("Operator note cannot be empty.")
+        if len(str(operator_note)) > 10000:
+            raise ValueError("Operator note exceeds maximum allowed length of 10,000 characters.")
+        if author and len(str(author)) > 100:
+            raise ValueError("Author exceeds maximum allowed length of 100 characters.")
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT status FROM cases WHERE case_id = ?;", (case_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        current_status = row[0]
+        now = datetime.now(timezone.utc).isoformat()
+        act_id = f"act_{uuid.uuid4().hex[:16]}"
+
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            self.conn.execute(
+                "UPDATE cases SET updated_at = ? WHERE case_id = ?;",
+                (now, case_id),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO review_actions (
+                    action_id, case_id, action_type, previous_status,
+                    new_status, operator_note, author, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (act_id, case_id, "note_added", current_status, current_status, operator_note.strip(), author, now),
+            )
+            self.conn.execute("COMMIT;")
+        except Exception:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+        return self.get_case(case_id)
+
+    def get_case_stats(self) -> Dict[str, Any]:
+        """Return aggregate statistics across investigation cases."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM cases;")
+        total_cases = cursor.fetchone()[0]
+
+        cursor.execute("SELECT status, COUNT(*) FROM cases GROUP BY status;")
+        by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
+        cursor.execute("SELECT severity, COUNT(*) FROM cases GROUP BY severity;")
+        by_severity = {row[0]: row[1] for row in cursor.fetchall()}
+
+        cursor.execute(
+            """
+            SELECT evaluation_id, evaluated_at, findings_scanned, events_scanned,
+                   cases_created, cases_updated, duration_ms
+            FROM correlation_evaluations
+            ORDER BY evaluated_at DESC
+            LIMIT 1;
+            """
+        )
+        last_eval_row = cursor.fetchone()
+        last_eval = dict(last_eval_row) if last_eval_row else None
+
+        return {
+            "total_cases": total_cases,
+            "total": total_cases,
+            "cases_by_status": by_status,
+            "by_status": by_status,
+            "cases_by_severity": by_severity,
+            "by_severity": by_severity,
+            "last_evaluation": last_eval,
+        }
+
+    def record_correlation_evaluation(self, audit_record: Dict[str, Any]) -> None:
+        """Record correlation engine execution metrics into audit table."""
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO correlation_evaluations (
+                evaluation_id, evaluated_at, findings_scanned, events_scanned,
+                cases_created, cases_updated, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                audit_record["evaluation_id"],
+                audit_record["evaluated_at"],
+                audit_record["findings_scanned"],
+                audit_record["events_scanned"],
+                audit_record["cases_created"],
+                audit_record["cases_updated"],
+                audit_record["duration_ms"],
+            ),
+        )
+        self.conn.commit()
+
+    # ---------------------------------------------------------
+    # Claim Guard Management (Phase 6)
+    # ---------------------------------------------------------
+
+    def persist_claim_proposal(self, proposal: Any) -> None:
+        """Persist an agent claim proposal into claim_proposals table."""
+        if hasattr(proposal, "to_dict"):
+            p_data = proposal.to_dict()
+        else:
+            p_data = proposal
+
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO claim_proposals (
+                claim_id, case_id, claim_type, predicate, value_json,
+                evidence_refs_json, certainty, template_id, proposed_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                p_data["claim_id"],
+                p_data["case_id"],
+                p_data["claim_type"],
+                p_data["predicate"],
+                json.dumps(p_data.get("value", {})),
+                json.dumps(p_data.get("evidence_refs", [])),
+                p_data.get("certainty", "observed"),
+                p_data.get("template_id", "case_event_count_v1"),
+                p_data.get("proposed_by", "kiro_crew_agent"),
+                p_data.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def persist_claim_verification(self, verification: Any) -> None:
+        """Persist a claim verification result into claim_verifications table."""
+        if hasattr(verification, "to_dict"):
+            v_data = verification.to_dict()
+        else:
+            v_data = verification
+
+        checks = v_data.get("checks", [])
+        checks_serialized = [c.to_dict() if hasattr(c, "to_dict") else c for c in checks]
+
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO claim_verifications (
+                verification_id, claim_id, case_id, status, verification_version,
+                checks_json, rendered_text, qualification_notes_json,
+                blocked_reasons_json, suggested_remedy, evidence_refs_json, verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                v_data["verification_id"],
+                v_data["claim_id"],
+                v_data["case_id"],
+                v_data["status"],
+                v_data.get("verification_version", "1.0.0"),
+                json.dumps(checks_serialized),
+                v_data["rendered_text"],
+                json.dumps(v_data.get("qualification_notes", [])),
+                json.dumps(v_data.get("blocked_reasons", [])),
+                v_data.get("suggested_remedy"),
+                json.dumps(v_data.get("evidence_refs", [])),
+                v_data.get("verified_at") or datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_claim(self, claim_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch claim proposal and latest verification result by claim_id."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT p.claim_id, p.case_id, p.claim_type, p.predicate, p.value_json,
+                   p.evidence_refs_json, p.certainty, p.template_id, p.proposed_by, p.created_at,
+                   v.verification_id, v.status, v.verification_version, v.checks_json,
+                   v.rendered_text, v.qualification_notes_json, v.blocked_reasons_json,
+                   v.suggested_remedy, v.verified_at
+            FROM claim_proposals p
+            LEFT JOIN claim_verifications v ON p.claim_id = v.claim_id
+            WHERE p.claim_id = ?
+            ORDER BY v.verified_at DESC
+            LIMIT 1;
+            """,
+            (claim_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._format_claim_row(row)
+
+    def list_case_claims(
+        self,
+        case_id: str,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List all claims for a case with their latest verification results."""
+        cursor = self.conn.cursor()
+        query = """
+            SELECT p.claim_id, p.case_id, p.claim_type, p.predicate, p.value_json,
+                   p.evidence_refs_json, p.certainty, p.template_id, p.proposed_by, p.created_at,
+                   v.verification_id, v.status, v.verification_version, v.checks_json,
+                   v.rendered_text, v.qualification_notes_json, v.blocked_reasons_json,
+                   v.suggested_remedy, v.verified_at
+            FROM claim_proposals p
+            LEFT JOIN claim_verifications v ON p.claim_id = v.claim_id
+            WHERE p.case_id = ?
+        """
+        params: List[Any] = [case_id]
+        if status:
+            query += " AND v.status = ?"
+            params.append(status)
+
+        query += " ORDER BY p.created_at ASC, v.verified_at DESC;"
+        cursor.execute(query, tuple(params))
+
+        claims = []
+        seen_claim_ids = set()
+        for row in cursor.fetchall():
+            c_dict = self._format_claim_row(row)
+            if c_dict["claim_id"] not in seen_claim_ids:
+                seen_claim_ids.add(c_dict["claim_id"])
+                claims.append(c_dict)
+        return claims
+
+    def list_all_claims(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List claim verifications with pagination and optional status filter."""
+        cursor = self.conn.cursor()
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if status:
+            where_clauses.append("v.status = ?")
+            params.append(status)
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        count_sql = f"""
+            SELECT COUNT(DISTINCT p.claim_id)
+            FROM claim_proposals p
+            LEFT JOIN claim_verifications v ON p.claim_id = v.claim_id
+            {where_sql};
+        """
+        cursor.execute(count_sql, tuple(params))
+        total = cursor.fetchone()[0]
+
+        query = f"""
+            SELECT p.claim_id, p.case_id, p.claim_type, p.predicate, p.value_json,
+                   p.evidence_refs_json, p.certainty, p.template_id, p.proposed_by, p.created_at,
+                   v.verification_id, v.status, v.verification_version, v.checks_json,
+                   v.rendered_text, v.qualification_notes_json, v.blocked_reasons_json,
+                   v.suggested_remedy, v.verified_at
+            FROM claim_proposals p
+            LEFT JOIN claim_verifications v ON p.claim_id = v.claim_id
+            {where_sql}
+            GROUP BY p.claim_id
+            ORDER BY v.verified_at DESC, p.created_at DESC
+            LIMIT ? OFFSET ?;
+        """
+        params.extend([limit, offset])
+        cursor.execute(query, tuple(params))
+
+        claims = [self._format_claim_row(row) for row in cursor.fetchall()]
+        return claims, total
+
+    def _format_claim_row(self, row: Any) -> Dict[str, Any]:
+        """Deserialize JSON fields from a claim query row."""
+        r = dict(row)
+        try:
+            r["value"] = json.loads(r.pop("value_json", "{}"))
+        except Exception:
+            r["value"] = {}
+        try:
+            r["evidence_refs"] = json.loads(r.pop("evidence_refs_json", "[]"))
+        except Exception:
+            r["evidence_refs"] = []
+        try:
+            r["checks"] = json.loads(r.pop("checks_json", "[]"))
+        except Exception:
+            r["checks"] = []
+        try:
+            r["qualification_notes"] = json.loads(r.pop("qualification_notes_json", "[]"))
+        except Exception:
+            r["qualification_notes"] = []
+        try:
+            r["blocked_reasons"] = json.loads(r.pop("blocked_reasons_json", "[]"))
+        except Exception:
+            r["blocked_reasons"] = []
+        return r
+
+    # ---------------------------------------------------------
+    # Replay Lab Management (Phase 7)
+    # ---------------------------------------------------------
+
+    def persist_replay_run(self, run_data: Dict[str, Any]) -> None:
+        """Persist or update a replay run execution record."""
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO replay_runs (
+                replay_id, scenario_id, scenario_version, status, mode,
+                pipeline_versions_json, fixture_checksums_json, what_if_config_json,
+                metrics_json, assertion_results_json, stages_json,
+                cases_snapshot_json, claims_snapshot_json, error_summary,
+                started_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                run_data["replay_id"],
+                run_data["scenario_id"],
+                run_data.get("scenario_version", "1.0.0"),
+                run_data.get("status", "completed"),
+                run_data.get("mode", "standard"),
+                json.dumps(run_data.get("pipeline_versions", {})),
+                json.dumps(run_data.get("fixture_checksums", {})),
+                json.dumps(run_data.get("what_if_config", {})),
+                json.dumps(run_data.get("metrics", {})),
+                json.dumps(run_data.get("assertion_results", [])),
+                json.dumps(run_data.get("stages", [])),
+                json.dumps(run_data.get("cases_snapshot", [])),
+                json.dumps(run_data.get("claims_snapshot", [])),
+                run_data.get("error_summary"),
+                run_data.get("started_at") or datetime.now(timezone.utc).isoformat(),
+                run_data.get("completed_at"),
+            ),
+        )
+        self.conn.commit()
+
+    def get_replay_run(self, replay_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a specific replay run report by replay ID."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT replay_id, scenario_id, scenario_version, status, mode,
+                   pipeline_versions_json, fixture_checksums_json, what_if_config_json,
+                   metrics_json, assertion_results_json, stages_json,
+                   cases_snapshot_json, claims_snapshot_json, error_summary,
+                   started_at, completed_at
+            FROM replay_runs
+            WHERE replay_id = ?;
+            """,
+            (replay_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._format_replay_run_row(row)
+
+    def list_replay_runs(
+        self,
+        scenario_id: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List past replay run summaries ordered by started_at descending."""
+        cursor = self.conn.cursor()
+        where_clauses = []
+        params: List[Any] = []
+
+        if scenario_id:
+            where_clauses.append("scenario_id = ?")
+            params.append(scenario_id)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        cursor.execute(f"SELECT count(*) FROM replay_runs {where_sql};", tuple(params))
+        total = cursor.fetchone()[0]
+
+        query = f"""
+            SELECT replay_id, scenario_id, scenario_version, status, mode,
+                   pipeline_versions_json, fixture_checksums_json, what_if_config_json,
+                   metrics_json, assertion_results_json, stages_json,
+                   cases_snapshot_json, claims_snapshot_json, error_summary,
+                   started_at, completed_at
+            FROM replay_runs
+            {where_sql}
+            ORDER BY started_at DESC
+            LIMIT ? OFFSET ?;
+        """
+        params.extend([limit, offset])
+        cursor.execute(query, tuple(params))
+
+        runs = [self._format_replay_run_row(row) for row in cursor.fetchall()]
+        return runs, total
+
+    def reset_replay_runs(self, scenario_id: Optional[str] = None) -> int:
+        """Reset replay history safely without touching core security tables."""
+        cursor = self.conn.cursor()
+        if scenario_id:
+            cursor.execute("DELETE FROM replay_runs WHERE scenario_id = ?;", (scenario_id,))
+        else:
+            cursor.execute("DELETE FROM replay_runs;")
+        deleted = cursor.rowcount
+        self.conn.commit()
+        return deleted
+
+    def persist_replay_expectation(
+        self,
+        scenario_id: str,
+        scenario_version: str,
+        manifest: Dict[str, Any],
+        checksums: Dict[str, str],
+    ) -> None:
+        """Persist or update committed baseline scenario expectations."""
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO replay_expectations (
+                scenario_id, scenario_version, manifest_json, fixture_checksums_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?);
+            """,
+            (
+                scenario_id,
+                scenario_version,
+                json.dumps(manifest),
+                json.dumps(checksums),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_replay_expectation(self, scenario_id: str, scenario_version: str) -> Optional[Dict[str, Any]]:
+        """Retrieve stored scenario expectation manifest."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT scenario_id, scenario_version, manifest_json, fixture_checksums_json, updated_at
+            FROM replay_expectations
+            WHERE scenario_id = ? AND scenario_version = ?;
+            """,
+            (scenario_id, scenario_version),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        try:
+            r["manifest"] = json.loads(r.pop("manifest_json", "{}"))
+        except Exception:
+            r["manifest"] = {}
+        try:
+            r["fixture_checksums"] = json.loads(r.pop("fixture_checksums_json", "{}"))
+        except Exception:
+            r["fixture_checksums"] = {}
+        return r
+
+    def _format_replay_run_row(self, row: Any) -> Dict[str, Any]:
+        """Deserialize JSON fields from a replay run query row."""
+        r = dict(row)
+        for key in ("pipeline_versions", "fixture_checksums", "what_if_config", "metrics"):
+            json_key = f"{key}_json"
+            try:
+                r[key] = json.loads(r.pop(json_key, "{}"))
+            except Exception:
+                r[key] = {}
+        for key in ("assertion_results", "stages", "cases_snapshot", "claims_snapshot"):
+            json_key = f"{key}_json"
+            try:
+                r[key] = json.loads(r.pop(json_key, "[]"))
+            except Exception:
+                r[key] = []
+        return r
+
 
 
 

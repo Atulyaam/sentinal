@@ -319,6 +319,75 @@ class TestFindingsDatabase(unittest.TestCase):
         self.assertEqual(stats["last_evaluation"]["evaluation_id"], "eval_test_001")
         self.assertEqual(stats["last_evaluation"]["rule_count"], 5)
 
+    def test_get_finding_with_quarantined_records(self) -> None:
+        """Verify get_finding populates quarantined_records when INGEST-001 matches normalization errors."""
+        # 1. Insert a parsed record to satisfy foreign key constraint on normalization_errors(record_id)
+        self.repo.persist_import_batch(
+            import_id="imp_findings_001",
+            status="completed",
+            total_records=1,
+            accepted_records=1,
+            rejected_records=0,
+            records=[
+                {
+                    "record_number": 99,
+                    "parser_id": "auth_csv",
+                    "parser_version": "1.0.0",
+                    "record": {
+                        "line_number": 99,
+                        "timestamp": "2026-11-09T08:00:00",
+                        "event_type": "user_authentication",
+                        "attributes": {},
+                        "raw_payload": "{}",
+                    },
+                }
+            ],
+            errors=[],
+        )
+        unnorm = self.repo.get_unnormalized_records(import_id="imp_findings_001")
+        target_rec_id = unnorm[-1]["record_id"]
+
+        # 2. Insert a normalization error referencing the parsed record
+        self.repo.persist_normalized_events_batch(
+            events=[],
+            errors=[
+                {
+                    "error_id": "nerr_quarantine_01",
+                    "record_id": target_rec_id,
+                    "import_id": "imp_findings_001",
+                    "record_number": 99,
+                    "error_code": "NORM_TIMEZONE_UNKNOWN",
+                    "safe_error_message": "Timestamp lacks timezone",
+                }
+            ],
+        )
+
+        f = Finding(
+            finding_id="find_ingest_quarantine_test",
+            rule_id="INGEST-001",
+            rule_version="1.0.0",
+            rule_config_hash="a" * 64,
+            severity="Info",
+            status="open",
+            title="Quarantined records anomaly",
+            description="Quarantined records detected",
+            first_observed_at="2026-11-09T10:00:00Z",
+            last_observed_at="2026-11-09T10:00:00Z",
+            matched_entity="imp_findings_001",
+            matched_conditions={"record_ids": [target_rec_id], "import_id": "imp_findings_001"},
+            supporting_event_ids=[],
+            limitations="none",
+            dedupe_key="ingest_quarantine_dedupe",
+        )
+        self.repo.persist_findings_batch([f])
+
+        fetched = self.repo.get_finding("find_ingest_quarantine_test")
+        self.assertIsNotNone(fetched)
+        self.assertEqual(fetched["supporting_events"], [])
+        self.assertEqual(len(fetched["quarantined_records"]), 1)
+        self.assertEqual(fetched["quarantined_records"][0]["error_id"], "nerr_quarantine_01")
+        self.assertEqual(fetched["quarantined_records"][0]["error_code"], "NORM_TIMEZONE_UNKNOWN")
+
 
 if __name__ == "__main__":
     unittest.main()

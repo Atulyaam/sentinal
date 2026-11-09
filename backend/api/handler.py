@@ -8,6 +8,14 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from backend.api.upload import parse_import_payload
+from backend.cases.engine import CorrelationEngine
+from backend.claims.engine import ClaimGuardEngine
+from backend.claims.models import (
+    SUPPORTED_CLAIM_TYPES,
+    VERIFIER_VERSION,
+    ClaimProposal,
+)
+from backend.claims.templates import APPROVED_TEMPLATES
 from backend.config.settings import get_settings
 from backend.detection.engine import DetectionEngine
 from backend.ingestion.engine import ImportEngine
@@ -24,6 +32,8 @@ _repo: Optional[IngestionRepository] = None
 _engine: Optional[ImportEngine] = None
 _norm_engine: Optional[NormalizationEngine] = None
 _detection_engine: Optional[DetectionEngine] = None
+_correlation_engine: Optional[CorrelationEngine] = None
+_claim_engine: Optional[ClaimGuardEngine] = None
 
 
 def get_repository() -> IngestionRepository:
@@ -62,6 +72,22 @@ def get_detection_engine() -> DetectionEngine:
     if _detection_engine is None:
         _detection_engine = DetectionEngine()
     return _detection_engine
+
+
+def get_correlation_engine() -> CorrelationEngine:
+    """Obtain or initialize the deterministic correlation engine."""
+    global _correlation_engine
+    if _correlation_engine is None:
+        _correlation_engine = CorrelationEngine()
+    return _correlation_engine
+
+
+def get_claim_engine() -> ClaimGuardEngine:
+    """Obtain or initialize the Claim Guard engine."""
+    global _claim_engine
+    if _claim_engine is None:
+        _claim_engine = ClaimGuardEngine()
+    return _claim_engine
 
 
 class SentinelRequestHandler(BaseHTTPRequestHandler):
@@ -355,6 +381,108 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(200, finding, origin=origin)
                 return
 
+            # 15. Case statistics (Phase 5)
+            if clean_path == "/api/cases/stats":
+                repo = get_repository()
+                stats = repo.get_case_stats()
+                self._send_json_response(200, stats, origin=origin)
+                return
+
+            # 16. List cases (Phase 5)
+            if clean_path == "/api/cases":
+                query_params = parse_qs(parsed_url.query)
+                limit = 50
+                offset = 0
+                if "limit" in query_params:
+                    try:
+                        limit = min(max(int(query_params["limit"][0]), 1), 200)
+                    except ValueError:
+                        pass
+                if "offset" in query_params:
+                    try:
+                        offset = max(int(query_params["offset"][0]), 0)
+                    except ValueError:
+                        pass
+
+                status = query_params.get("status", [None])[0]
+                severity = query_params.get("severity", [None])[0]
+                correlation_key_type = query_params.get("correlation_key_type", [None])[0]
+                search = query_params.get("search", [None])[0]
+
+                repo = get_repository()
+                cases, total = repo.list_cases(
+                    limit=limit,
+                    offset=offset,
+                    status=status,
+                    severity=severity,
+                    correlation_key_type=correlation_key_type,
+                    search=search,
+                )
+                self._send_json_response(200, {
+                    "cases": cases,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                }, origin=origin)
+                return
+
+            # 17. Claim templates catalog (Phase 6)
+            if clean_path == "/api/claims/templates":
+                self._send_json_response(200, {
+                    "templates": APPROVED_TEMPLATES,
+                    "supported_claim_types": sorted(list(SUPPORTED_CLAIM_TYPES)),
+                    "version": VERIFIER_VERSION,
+                }, origin=origin)
+                return
+
+            # 18. Case claims list (Phase 6)
+            if clean_path.startswith("/api/cases/") and clean_path.endswith("/claims"):
+                parts = clean_path.split("/")
+                if len(parts) == 5 and parts[2] == "cases" and parts[4] == "claims":
+                    case_id = parts[3].strip()
+                    query_params = parse_qs(parsed_url.query)
+                    status_filter = query_params.get("status", [None])[0]
+                    repo = get_repository()
+                    case = repo.get_case(case_id)
+                    if not case:
+                        self._send_json_response(404, {"error": "Not Found", "message": f"Case '{case_id}' not found."}, origin=origin)
+                        return
+                    claims = repo.list_case_claims(case_id, status=status_filter)
+                    self._send_json_response(200, {
+                        "case_id": case_id,
+                        "claims": claims,
+                        "total": len(claims),
+                    }, origin=origin)
+                    return
+
+            # 19. Single claim detail (Phase 6)
+            if clean_path.startswith("/api/claims/"):
+                claim_id = clean_path[len("/api/claims/"):].strip()
+                if not claim_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing claim ID."}, origin=origin)
+                    return
+                repo = get_repository()
+                claim = repo.get_claim(claim_id)
+                if not claim:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Claim '{claim_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, claim, origin=origin)
+                return
+
+            # 20. Get specific case detail with timeline and review history (Phase 5)
+            if clean_path.startswith("/api/cases/"):
+                case_id = clean_path[len("/api/cases/"):].strip()
+                if not case_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing case ID."}, origin=origin)
+                    return
+                repo = get_repository()
+                case = repo.get_case(case_id)
+                if not case:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Case '{case_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, case, origin=origin)
+                return
+
             # 404 for unhandled paths
             self._send_json_response(404, {
                 "error": "Not Found",
@@ -488,6 +616,230 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                 }, origin=origin)
                 return
 
+            # Correlation trigger endpoint (Phase 5)
+            if clean_path in ("/api/cases/correlate", "/api/cases/run"):
+                content_length_str = self.headers.get("Content-Length")
+                payload_data = {}
+                if content_length_str:
+                    try:
+                        content_length = int(content_length_str)
+                        if content_length > 0:
+                            raw_body = self.rfile.read(content_length)
+                            payload_data = json.loads(raw_body.decode("utf-8"))
+                    except Exception as err:
+                        logger.warning("Could not parse cases/correlate payload: %s", err)
+
+                limit_findings = int(payload_data.get("limit_findings", 1000))
+                repo = get_repository()
+                corr_engine = get_correlation_engine()
+                corr_res = corr_engine.run_correlation(
+                    repository=repo,
+                    limit_findings=limit_findings,
+                )
+                self._send_json_response(200, {
+                    "status": "success",
+                    "result": corr_res,
+                }, origin=origin)
+                return
+
+            # Add operator review action / note / decision to case (Phase 5)
+            if clean_path.startswith("/api/cases/") and clean_path.endswith("/review"):
+                # Path format: /api/cases/{case_id}/review
+                parts = clean_path.split("/")
+                if len(parts) == 5 and parts[2] == "cases" and parts[4] == "review":
+                    case_id = parts[3].strip()
+                    content_length_str = self.headers.get("Content-Length")
+                    if not content_length_str:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Missing Content-Length header."}, origin=origin)
+                        return
+
+                    try:
+                        content_length = int(content_length_str)
+                        raw_body = self.rfile.read(content_length)
+                        payload = json.loads(raw_body.decode("utf-8"))
+                    except Exception:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Invalid JSON payload in request body."}, origin=origin)
+                        return
+
+                    note = payload.get("note") or payload.get("operator_note") or ""
+                    new_status = payload.get("status") or payload.get("new_status") or payload.get("to_status")
+                    author = payload.get("author") or payload.get("operator") or "secops_operator"
+
+                    if not note and not new_status:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Either 'note' or 'status' must be provided."}, origin=origin)
+                        return
+
+                    repo = get_repository()
+                    existing_case = repo.get_case(case_id)
+                    if not existing_case:
+                        self._send_json_response(404, {"error": "Not Found", "message": f"Case '{case_id}' not found."}, origin=origin)
+                        return
+
+                    try:
+                        if new_status and new_status != existing_case["status"]:
+                            updated_case = repo.update_case_status(
+                                case_id=case_id,
+                                new_status=new_status,
+                                operator_note=note,
+                                author=author,
+                            )
+                        elif note:
+                            updated_case = repo.add_case_note(
+                                case_id=case_id,
+                                operator_note=note,
+                                author=author,
+                            )
+                        else:
+                            updated_case = existing_case
+
+                        self._send_json_response(200, {
+                            "status": "success",
+                            "case": updated_case,
+                        }, origin=origin)
+                        return
+                    except ValueError as err:
+                        self._send_json_response(400, {
+                            "error": "Bad Request",
+                            "message": str(err),
+                        }, origin=origin)
+                        return
+
+            # Claim Guard verification endpoint (Phase 6)
+            if clean_path in ("/api/claims/verify", "/api/claims/run"):
+                content_length_str = self.headers.get("Content-Length")
+                if not content_length_str:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing Content-Length header."}, origin=origin)
+                    return
+
+                try:
+                    content_length = int(content_length_str)
+                    raw_body = self.rfile.read(content_length)
+                    payload_data = json.loads(raw_body.decode("utf-8"))
+                except Exception:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Invalid JSON payload in request body."}, origin=origin)
+                    return
+
+                case_id = payload_data.get("case_id") or payload_data.get("subject_ref")
+                raw_claims = payload_data.get("claims")
+
+                if raw_claims is None:
+                    if "claim_type" in payload_data:
+                        raw_claims = [payload_data]
+                    else:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Payload must include 'claims' list or a single claim object."}, origin=origin)
+                        return
+
+                if not isinstance(raw_claims, list):
+                    self._send_json_response(400, {"error": "Bad Request", "message": "'claims' must be a list of claim proposals."}, origin=origin)
+                    return
+
+                proposals = []
+                for idx, c_dict in enumerate(raw_claims):
+                    if not isinstance(c_dict, dict):
+                        self._send_json_response(400, {"error": "Bad Request", "message": f"Claim at index {idx} must be a JSON object."}, origin=origin)
+                        return
+                    if case_id and not c_dict.get("case_id"):
+                        c_dict["case_id"] = case_id
+                    try:
+                        proposal = ClaimProposal.from_dict(c_dict)
+                        proposals.append(proposal)
+                    except ValueError as ve:
+                        self._send_json_response(400, {"error": "Bad Request", "message": f"Invalid claim at index {idx}: {str(ve)}"}, origin=origin)
+                        return
+
+                if not proposals:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "No claims provided to verify."}, origin=origin)
+                    return
+
+                target_case_id = case_id or proposals[0].case_id
+                repo = get_repository()
+                engine = get_claim_engine()
+
+                try:
+                    verification_report = engine.process_claims(proposals, target_case_id, repo)
+                    self._send_json_response(200, {
+                        "status": "success",
+                        "report": verification_report,
+                    }, origin=origin)
+                    return
+                except ValueError as ve:
+                    self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
+                    return
+
+            # Claim Guard demo claims generation and verification (Phase 6)
+            if clean_path.startswith("/api/cases/") and clean_path.endswith("/claims/demo"):
+                parts = clean_path.split("/")
+                if len(parts) == 6 and parts[2] == "cases" and parts[4] == "claims" and parts[5] == "demo":
+                    case_id = parts[3].strip()
+                    repo = get_repository()
+                    case = repo.get_case(case_id)
+                    if not case:
+                        self._send_json_response(404, {"error": "Not Found", "message": f"Case '{case_id}' not found."}, origin=origin)
+                        return
+
+                    engine = get_claim_engine()
+                    demo_proposals = engine.generate_demo_claims(case_id, repo)
+                    report = engine.process_claims(demo_proposals, case_id, repo)
+                    self._send_json_response(200, {
+                        "status": "success",
+                        "case_id": case_id,
+                        "report": report,
+                    }, origin=origin)
+                    return
+
+            # Propose and verify claims for specific case (Phase 6)
+            if clean_path.startswith("/api/cases/") and clean_path.endswith("/claims/propose"):
+                parts = clean_path.split("/")
+                if len(parts) == 6 and parts[2] == "cases" and parts[4] == "claims" and parts[5] == "propose":
+                    case_id = parts[3].strip()
+                    content_length_str = self.headers.get("Content-Length")
+                    if not content_length_str:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Missing Content-Length header."}, origin=origin)
+                        return
+
+                    try:
+                        content_length = int(content_length_str)
+                        raw_body = self.rfile.read(content_length)
+                        payload_data = json.loads(raw_body.decode("utf-8"))
+                    except Exception:
+                        self._send_json_response(400, {"error": "Bad Request", "message": "Invalid JSON payload in request body."}, origin=origin)
+                        return
+
+                    raw_claims = payload_data.get("claims")
+                    if raw_claims is None:
+                        if "claim_type" in payload_data:
+                            raw_claims = [payload_data]
+                        else:
+                            self._send_json_response(400, {"error": "Bad Request", "message": "Payload must include 'claims' or single claim."}, origin=origin)
+                            return
+
+                    proposals = []
+                    for idx, c_dict in enumerate(raw_claims):
+                        if not isinstance(c_dict, dict):
+                            self._send_json_response(400, {"error": "Bad Request", "message": f"Claim at index {idx} must be a JSON object."}, origin=origin)
+                            return
+                        c_dict["case_id"] = case_id
+                        try:
+                            proposal = ClaimProposal.from_dict(c_dict)
+                            proposals.append(proposal)
+                        except ValueError as ve:
+                            self._send_json_response(400, {"error": "Bad Request", "message": f"Invalid claim at index {idx}: {str(ve)}"}, origin=origin)
+                            return
+
+                    repo = get_repository()
+                    engine = get_claim_engine()
+                    try:
+                        report = engine.process_claims(proposals, case_id, repo)
+                        self._send_json_response(200, {
+                            "status": "success",
+                            "case_id": case_id,
+                            "report": report,
+                        }, origin=origin)
+                        return
+                    except ValueError as ve:
+                        self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
+                        return
+
             # 404 for unhandled POST paths
             self._send_json_response(404, {
                 "error": "Not Found",
@@ -598,6 +950,47 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                     "enabled": enabled_val,
                 }, origin=origin)
                 return
+
+            # 3. Update case status (Phase 5)
+            if clean_path.startswith("/api/cases/"):
+                case_id = clean_path[len("/api/cases/"):].strip()
+                if not case_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing case ID."}, origin=origin)
+                    return
+
+                new_status = payload.get("status")
+                if not new_status or not isinstance(new_status, str):
+                    self._send_json_response(400, {
+                        "error": "Bad Request",
+                        "message": "Field 'status' is required and must be a string."
+                    }, origin=origin)
+                    return
+
+                note = payload.get("note") or payload.get("operator_note") or ""
+                author = payload.get("author", "secops_operator")
+
+                try:
+                    repo = get_repository()
+                    updated = repo.update_case_status(
+                        case_id=case_id,
+                        new_status=new_status,
+                        operator_note=note,
+                        author=author,
+                    )
+                    if not updated:
+                        self._send_json_response(404, {"error": "Not Found", "message": f"Case '{case_id}' not found."}, origin=origin)
+                        return
+                    self._send_json_response(200, {
+                        "status": "success",
+                        "case": updated,
+                    }, origin=origin)
+                    return
+                except ValueError as val_err:
+                    self._send_json_response(400, {
+                        "error": "Bad Request",
+                        "message": str(val_err),
+                    }, origin=origin)
+                    return
 
             # 404 for unhandled PATCH paths
             self._send_json_response(404, {

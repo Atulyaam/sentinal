@@ -1,6 +1,7 @@
 """Verification script for real Ingestion-to-Normalization and SQLite audit workflow."""
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -46,12 +47,19 @@ def main() -> None:
     print(" PROJECT SENTINEL — Phase 3 Real Normalization & Provenance Audit")
     print("=" * 70)
 
+    import tempfile
+    temp_dir = tempfile.TemporaryDirectory()
+    db_file = Path(temp_dir.name) / "norm_audit.db"
+    os.environ["SENTINEL_DB_PATH"] = str(db_file)
+
     # 1. Start Sentinel backend
-    print("\n[*] Starting Sentinel backend on 127.0.0.1:8000...")
+    print(f"\n[*] Starting Sentinel backend on 127.0.0.1:8000 (DB: {db_file})...")
+    server_log = open(Path(temp_dir.name) / "server.log", "w", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, "-m", "backend.api.server"],
         cwd=str(ROOT_DIR),
-        stdout=subprocess.PIPE,
+        env=dict(os.environ),
+        stdout=server_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -107,7 +115,7 @@ def main() -> None:
 
         # 2c. JSONL with naive timestamp to verify quarantine behavior
         naive_jsonl_content = (
-            f'{{"timestamp": "2026-11-09 08:30:00", "event_type": "naive_test", "user": "quarantine_target"}}\n'
+            f'{{"timestamp": "2026-11-09 08:30:00", "event_type": "naive_test", "user": "quarantine_target_{run_ts}"}}\n'
         )
         status, naive_res = request_json("POST", "/api/import", {
             "filename": f"naive_{run_ts}.jsonl",
@@ -200,7 +208,16 @@ def main() -> None:
         print("\n[*] Stopping backend service...")
         if proc.poll() is None:
             proc.terminate()
-            proc.wait(timeout=2.0)
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        try:
+            server_log.close()
+        except Exception:
+            pass
+        temp_dir.cleanup()
+        os.environ.pop("SENTINEL_DB_PATH", None)
         print("[+] Backend service stopped.")
 
     print("\n" + "=" * 70)
