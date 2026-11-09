@@ -86,4 +86,12 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+# 10. Real Replay Lab & What-If workflow verification
+Write-Host "--> Running Real Replay Lab & What-If Workflow Verification..." -ForegroundColor Yellow
+python scripts/verify_real_replay_workflow.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Real Replay Lab workflow verification failed!"
+    exit 1
+}
+
 Write-Host "==> [Hook] All Quality Gates Passed Cleanly!" -ForegroundColor Green

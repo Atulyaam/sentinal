@@ -1,7 +1,7 @@
-timestamp,username,source_ip,auth_result,action
-2026-11-09T08:00:00Z,operator_dave,198.51.100.10,FAILURE,login
-2026-11-09T08:01:00Z,operator_dave,198.51.100.10,FAILURE,login
-2026-11-09T08:02:00Z,operator_dave,198.51.100.10,FAILURE,login
-2026-11-09T08:03:00Z,operator_dave,198.51.100.10,FAILURE,login
-2026-11-09T08:04:00Z,operator_dave,198.51.100.10,FAILURE,login
-2026-11-09T08:10:00Z,operator_dave,198.51.100.10,SUCCESS,login
+timestamp,username,source_ip,auth_result
+2026-11-09T08:00:00Z,operator_dave,198.51.100.10,FAILURE
+2026-11-09T08:01:00Z,operator_dave,198.51.100.10,FAILURE
+2026-11-09T08:02:00Z,operator_dave,198.51.100.10,FAILURE
+2026-11-09T08:03:00Z,operator_dave,198.51.100.10,FAILURE
+2026-11-09T08:04:00Z,operator_dave,198.51.100.10,FAILURE
+2026-11-09T08:10:00Z,operator_dave,198.51.100.10,SUCCESS

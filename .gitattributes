@@ -1,0 +1,4 @@
+# Enforce consistent LF line endings for scenario fixtures across Windows, macOS, and Linux
+* text=auto
+fixtures/scenarios/* text eol=lf
+

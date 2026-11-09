@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Finding, DetectionStats, DetectionRule, RouteId, FindingStatus, FindingSeverity } from '../../types';
+import { getApiBaseUrl } from '../../utils/apiClient';
 
-const BACKEND_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+const BACKEND_BASE_URL = getApiBaseUrl();
 
 interface FindingsViewProps {
   onNavigate?: (route: RouteId) => void;

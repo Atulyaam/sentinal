@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { EventSource, ImportJob, ImportResult, ParserProfile } from '../../types';
 import { SourcesIcon, RefreshIcon } from '../Icons';
+import { getApiBaseUrl } from '../../utils/apiClient';
 
-const BACKEND_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+const BACKEND_BASE_URL = getApiBaseUrl();
 
 export const SourcesView: React.FC = () => {
   const [sources, setSources] = useState<EventSource[]>([]);
@@ -15,6 +16,7 @@ export const SourcesView: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedJobDetails, setSelectedJobDetails] = useState<ImportJob | null>(null);
+  const [isDemoMode, setIsDemoMode] = useState<boolean>(false);
 
   const fetchEndpoint = async (path: string) => {
     // 1. Try relative URL first
@@ -39,15 +41,19 @@ export const SourcesView: React.FC = () => {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const [sourcesData, parsersData, importsData] = await Promise.all([
+      const [sourcesData, parsersData, importsData, healthData] = await Promise.all([
         fetchEndpoint('/api/sources').catch(() => ({ sources: [] })),
         fetchEndpoint('/api/parsers').catch(() => ({ parsers: [] })),
         fetchEndpoint('/api/imports').catch(() => ({ imports: [] })),
+        fetchEndpoint('/health').catch(() => null),
       ]);
 
       setSources(sourcesData.sources || []);
       setParsers(parsersData.parsers || []);
       setImports(importsData.imports || []);
+      if (healthData && healthData.demo_mode) {
+        setIsDemoMode(true);
+      }
     } catch (err: unknown) {
       setErrorMessage(err instanceof Error ? err.message : 'Failed to connect to backend service.');
     } finally {
@@ -157,6 +163,29 @@ export const SourcesView: React.FC = () => {
           {isLoading ? 'Refreshing...' : 'Refresh Sources'}
         </button>
       </div>
+
+      {/* Demo Mode Notice */}
+      {isDemoMode && (
+        <div
+          style={{
+            background: 'rgba(30, 58, 138, 0.15)',
+            border: '1px solid rgba(56, 189, 248, 0.3)',
+            borderRadius: '6px',
+            padding: '12px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+          }}
+        >
+          <div>
+            <strong style={{ color: '#38bdf8', fontSize: '13px' }}>Public Demo Mode Active</strong>
+            <p style={{ color: '#cbd5e1', fontSize: '12px', margin: '4px 0 0 0', lineHeight: 1.5 }}>
+              Manual log upload and arbitrary directory scanning are disabled for public security. All pipeline stages (ingestion, normalization, detection, correlation, and Claim Guard) can be safely executed using the <strong>Replay Lab</strong> synthetic scenarios.
+            </p>
+          </div>
+        </div>
+      )}
 
       {errorMessage && (
         <div style={{
@@ -283,21 +312,21 @@ export const SourcesView: React.FC = () => {
 
             <button
               type="submit"
-              disabled={!selectedFile || isUploading}
+              disabled={isDemoMode || !selectedFile || isUploading}
               style={{
                 marginTop: '4px',
                 padding: '10px 16px',
                 borderRadius: '6px',
-                backgroundColor: !selectedFile || isUploading ? 'var(--color-border)' : 'var(--color-accent)',
+                backgroundColor: isDemoMode || !selectedFile || isUploading ? 'var(--color-border)' : 'var(--color-accent)',
                 color: '#ffffff',
                 border: 'none',
                 fontWeight: 600,
                 fontSize: '13px',
-                cursor: !selectedFile || isUploading ? 'not-allowed' : 'pointer',
+                cursor: isDemoMode || !selectedFile || isUploading ? 'not-allowed' : 'pointer',
                 transition: 'background-color 0.15s ease',
               }}
             >
-              {isUploading ? 'Validating & Ingesting...' : 'Ingest Log File'}
+              {isDemoMode ? 'Upload Disabled in Public Demo Mode' : isUploading ? 'Validating & Ingesting...' : 'Ingest Log File'}
             </button>
           </form>
 

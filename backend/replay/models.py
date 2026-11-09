@@ -163,8 +163,9 @@ class ReplayMetrics:
 class WhatIfConfig:
     """Parameters for a hypothetical What-If simulation run."""
 
-    what_if_id: str
-    description: str
+    what_if_id: str = "wif_custom"
+    description: str = "Custom What-If Simulation"
+    name: str = ""
     rule_overrides: Optional[Dict[str, Any]] = None  # e.g. {"AUTH-001": {"threshold_count": 10}}
     correlation_overrides: Optional[Dict[str, Any]] = None  # e.g. {"enable_ip_correlation": True}
     excluded_records: Optional[List[int]] = None  # 1-based line numbers to drop from fixture

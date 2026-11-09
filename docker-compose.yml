@@ -1,0 +1,30 @@
+services:
+  sentinel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: project-sentinel:latest
+    container_name: project-sentinel
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SENTINEL_ENV=production
+      - SENTINEL_DEMO_MODE=true
+      - SENTINEL_DEMO_SEED=true
+      - SENTINEL_DB_PATH=/data/sentinel.db
+      - SENTINEL_HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      - sentinel-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, os; p = os.getenv('PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  sentinel-data:
+    driver: local
+

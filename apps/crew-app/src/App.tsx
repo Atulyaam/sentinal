@@ -7,9 +7,11 @@ import { SourcesView } from './components/Views/SourcesView';
 import { EventsView } from './components/Views/EventsView';
 import { FindingsView } from './components/Views/FindingsView';
 import { CasesView } from './components/Views/CasesView';
+import { ReplayView } from './components/Views/ReplayView';
 import { PlannedView } from './components/Views/PlannedView';
+import { getApiBaseUrl } from './utils/apiClient';
 
-const BACKEND_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+const BACKEND_BASE_URL = getApiBaseUrl();
 
 const getInitialRoute = (): RouteId => {
   if (typeof window !== 'undefined') {
@@ -139,6 +141,59 @@ export const App: React.FC = () => {
           isChecking={isChecking}
         />
 
+        {health.data?.demo_mode && (
+          <div
+            style={{
+              background: 'linear-gradient(90deg, rgba(30, 58, 138, 0.85), rgba(15, 23, 42, 0.9))',
+              borderBottom: '1px solid rgba(56, 189, 248, 0.3)',
+              padding: '8px 24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: '12px',
+              color: '#93c5fd',
+              gap: '12px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  background: '#2563eb',
+                  color: '#ffffff',
+                  fontWeight: 700,
+                  fontSize: '10px',
+                  padding: '2px 6px',
+                  borderRadius: '4px',
+                  letterSpacing: '0.05em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                PUBLIC JUDGE DEMO
+              </span>
+              <span>
+                Synthetic security scenarios only &bull; Real production pipeline execution with zero fake outcomes &bull; File uploads restricted
+              </span>
+            </div>
+            <button
+              onClick={() => handleNavigate('replay')}
+              style={{
+                background: 'rgba(56, 189, 248, 0.2)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                borderRadius: '4px',
+                padding: '3px 10px',
+                fontSize: '11px',
+                cursor: 'pointer',
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Open Replay Lab &rarr;
+            </button>
+          </div>
+        )}
+
         <main className="sentinel-content" role="main">
           {currentRoute === 'overview' ? (
             <OverviewView
@@ -155,6 +210,8 @@ export const App: React.FC = () => {
             <FindingsView onNavigate={handleNavigate} />
           ) : currentRoute === 'investigations' ? (
             <CasesView onNavigate={handleNavigate} />
+          ) : currentRoute === 'replay' ? (
+            <ReplayView onNavigate={handleNavigate} />
           ) : (
             <PlannedView
               routeMeta={activeRouteMeta}

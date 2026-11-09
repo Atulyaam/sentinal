@@ -37,8 +37,8 @@ SCENARIO_A = ScenarioManifest(
         ScenarioFixture(
             filename="scenario_a_auth_burst.csv",
             parser_id="auth_csv",
-            sha256="aae7278ade82bc3694d92e9a6f5ed33c01115d4082efa14ad9f3f6b93a05f06e",
-            size_bytes=426,
+            sha256="45e53eda48ed3e2b683f3ce99bc25732de7e733e0b3a0f0fc323464283c13618",
+            size_bytes=383,
             description="6 authentication records (5 failures, 1 success) for user 'operator_dave'.",
         )
     ],
@@ -130,8 +130,8 @@ SCENARIO_B = ScenarioManifest(
         ScenarioFixture(
             filename="scenario_b_web_probe.csv",
             parser_id="web_access_csv",
-            sha256="3645ef201e570ea6a28ff551406a20f75d1c3a47be7143efe525dadcf84f6c66",
-            size_bytes=383,
+            sha256="c76e17ccf0b6e21a779a55d4414982f799a2b8b15603c568bc48c743b74be463",
+            size_bytes=448,
             description="5 web access records (3 forbidden administrative probes, 2 benign public requests).",
         )
     ],
@@ -166,12 +166,13 @@ SCENARIO_B = ScenarioManifest(
         expected_normalized_events=5,
         expected_rules=["WEB-001"],
         expected_findings_count=1,
-        expected_cases_count=0,  # IP-only correlation disabled by default; 0 identity cases created
+        expected_cases_count=1,
         expected_claim_outcomes={
             "clm_scn_b_01": "verified",
             "clm_scn_b_02": "verified",
-            "clm_scn_b_03": "blocked",  # IP guardrail block
+            "clm_scn_b_03": "blocked",  # IP guardrail block: cannot infer user identity from IP alone
         },
+        expected_timeline_types=["event", "finding", "correlation"],
     ),
     supported_what_ifs=[
         {
@@ -287,14 +288,30 @@ def list_scenario_manifests() -> List[ScenarioManifest]:
     return list(SCENARIO_CATALOG.values())
 
 
+def list_scenarios() -> List[ScenarioManifest]:
+    """Alias for list_scenario_manifests."""
+    return list_scenario_manifests()
+
+
 def get_scenario_manifest(scenario_id: str) -> Optional[ScenarioManifest]:
     """Look up a scenario manifest by ID."""
     return SCENARIO_CATALOG.get(scenario_id)
 
 
+def get_scenario(scenario_id: str) -> ScenarioManifest:
+    """Look up a scenario manifest by ID or raise KeyError."""
+    manifest = SCENARIO_CATALOG.get(scenario_id)
+    if not manifest:
+        raise KeyError(f"Unknown scenario ID: {scenario_id}")
+    return manifest
+
+
 def get_fixture_path(filename: str) -> Path:
-    """Resolve absolute path to a scenario fixture file."""
-    p = FIXTURES_DIR / filename
-    if not p.exists():
+    """Resolve absolute path to a scenario fixture file, preventing directory traversal."""
+    resolved_fixtures_dir = FIXTURES_DIR.resolve()
+    p = (resolved_fixtures_dir / filename).resolve()
+    if not str(p).startswith(str(resolved_fixtures_dir)):
+        raise ValueError(f"Path traversal detected in fixture path: {filename}")
+    if not p.exists() or not p.is_file():
         raise FileNotFoundError(f"Scenario fixture '{filename}' not found at {p}")
     return p

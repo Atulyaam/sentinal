@@ -35,21 +35,36 @@ project-sentinel/
 
 ---
 
-## Phase 6 Capabilities (Sprint 6 Complete)
+## Phase 8 Capabilities (Sprint 8 Complete — Hosted Judge Demo & Production Deployment)
 
-Project Sentinel v0.6.0 introduces **Claim Guard**: a zero-trust verification boundary for AI-assisted security investigations (*"AI proposes. Deterministic code verifies. The operator decides."*):
-1. **Typed Claim Schema & Vocabulary:** LLMs and automated workflows propose structured JSON claims adhering to a finite set of 8 claim types and approved predicates (`shared/contracts/claim_contract.json`).
-2. **Deterministic 9-Stage Verifier:** Pure Python engine checks claims against SQLite evidence tables: schema validity, template vetting, injection scanning, case containment, mathematical value validation, IP-only identity guardrails, data quality checks, certainty alignment, and safe rendering. Zero LLM self-evaluation.
-3. **Three Explicit Verification Outcomes:**
-   - **`verified`:** Evidence exists in the case and matches claimed values and predicates exactly.
-   - **`qualified`:** Supported by evidence, but carries explicit caveats (e.g. certainty is `inferred` or `hypothesis`, or data quality warnings exist).
-   - **`blocked`:** Evidence is missing, refers to foreign cases (cross-case tampering), contains conflicting values, attempts prompt/script injection, or infers user identity from IP alone. Strictly quarantined in the audit panel and never rendered in the factual narrative.
-4. **Approved Template Catalog with Mandatory HTML Escaping:** Verified and qualified claims render exclusively through vetted parameter substitution templates (`backend/claims/templates.py`) with `html.escape()` applied to all dynamic values.
-5. **Anti-Hallucination & Containment Guardrails:** Categorically blocks claims asserting human identity from IP alone, or referencing evidence outside the target case.
-6. **Signature Demo Moment:** Interactive trigger in the UI (`POST /api/cases/{id}/claims/demo`) generating verified, qualified, and adversarial blocked claims with clear remediation advice.
-7. **SQLite Persistence:** Migration 006 adds `claim_proposals` and `claim_verifications` with cascading foreign keys to `cases(case_id)`.
-8. **Analyst Workspace UI:** Dedicated Claim Guard tab in `CasesView` with real-time metrics, color-coded verified/qualified/blocked panels, clickable evidence chips, and demo trigger.
-9. **169 Automated Tests:** Complete passing suite across unit, contract, integration, security, and headless browser runtime verification.
+Project Sentinel v0.8.0 delivers the **Hosted Synthetic Judge Demo & Production Deployment** architecture, providing an immediate, zero-installation, publicly accessible demonstration of Sentinel's end-to-end security investigation pipeline for Kiroween 2026:
+1. **Unified Single-Container Architecture:** Serves both the compiled React Single Page Application (SPA) and the Python HTTP API from a single lightweight container with client-side SPA routing fallback and security headers.
+2. **Zero Third-Party Python Runtime Dependencies:** Built 100% on the Python 3.12+ standard library (`sqlite3`, `http.server`, `hashlib`, `json`, `dataclasses`, `pathlib`, `urllib`). Zero supply-chain attack surface, <45ms startup time, and <100MB container footprint.
+3. **Public Demo Mode (`SENTINEL_DEMO_MODE=true`):** Restricts arbitrary file imports (`POST /api/import` returns `403 Forbidden`) while keeping Replay Lab synthetic scenarios 100% functional on isolated in-memory databases.
+4. **Automated Baseline Demo Seeder:** Automatically populates `SCN-AUTH-BURST` on container startup so visiting judges land on an immediately active investigation dashboard.
+5. **Rolling-Window Rate Limiter:** Protects heavy and simulation endpoints (`/api/replay/*`, `/api/cases/correlate`) against abuse with a 60-second rolling window per client IP.
+6. **Health & Readiness Probes:** Dedicated `/health` and `/ready` probes for Kubernetes, Render, Railway, and Fly.io.
+7. **Judge Onboarding UI:** Public Demo status badge in header and a 2-Minute Judge Walkthrough card in `OverviewView.tsx`.
+8. **Multi-Stage Container & Blueprints:** Ready-to-deploy `Dockerfile`, `docker-compose.yml`, `render.yaml`, and `railway.toml`.
+9. **Automated 17-Step Judge Verification:** `scripts/verify_hosted_demo.py` validates the entire end-to-end judge evaluation workflow against any target URL with 100% compliance.
+10. **235 Automated Tests & 10 Quality Gates:** Complete passing test suite across unit, contract, integration, security, E2E, and headless browser runtime verification.
+
+---
+
+## Phase 7 Capabilities (Sprint 7 Complete — Replay Lab & What-If Simulation)
+
+Project Sentinel v0.7.0 introduces the **Replay Lab**: a deterministic incident replay and what-if simulation environment executing the real live security pipeline with zero mocked outcomes (*"Every replay executes the real pipeline. No mocked results."*):
+1. **Real Pipeline Execution (Zero Mocks):** Authentic execution through `ImportEngine` -> `NormalizationEngine` -> `DetectionEngine` -> `CorrelationEngine` -> `ClaimGuardEngine` on isolated in-memory SQLite databases (`:memory:`).
+2. **Three Canonical Synthetic Scenarios:**
+   - **`SCN-AUTH-BURST` (Authentication Burst):** 5 failures and 1 success for `operator_dave`. Detects `AUTH-001`, `AUTH-002`, groups into High-severity case, and Claim Guard blocks unproven attacker attribution.
+   - **`SCN-WEB-PROBE` (Sensitive Endpoint Probing):** Probing across `/admin`, `/api/v1/auth`, `/config` receiving HTTP 403 Forbidden. Detects `WEB-001` and strictly enforces Sentinel's IP Guardrail (cannot infer identity from IP alone).
+   - **`SCN-PRIV-ESC` (Privilege Escalation Investigation):** Administrative role change event (`role_changed`) for `analyst_bob`. Detects `PRIV-001`, verifies SHA-256 provenance hashes, and blocks exaggerated record counts.
+3. **Committed Fixtures & SHA-256 Integrity:** Authentic fixture files stored in `fixtures/scenarios/` with cryptographically verified checksums.
+4. **What-If Counterfactual Simulation & Semantic Diffs:** Evaluates parameter variations (elevated failure thresholds, line exclusions) and calculates exact mathematical differences (`findings_added`, `findings_removed`, `metric_deltas`).
+5. **Deterministic Repeatability & Comparison Engine:** `compare_runs` verifies 100% identical outputs and 0 metric deltas between repeated runs.
+6. **Strict Host Data Isolation:** Core security tables (`sources`, `raw_records`, `normalized_events`, `findings`, `cases`, `case_claims`) in the primary database remain 100% untouched.
+7. **Interactive Replay Workbench UI:** Live `ReplayView` in `apps/crew-app` featuring scenario cards, 7-stage execution stepper, proof assertions table, chronological case timeline, Claim Guard audit cards, what-if diff cards, and side-by-side run comparison.
+8. **215 Automated Tests & 10 Quality Gates:** Complete passing suite across unit, contract, integration, security, E2E, and headless browser runtime verification.
 
 ### Quickstart
 
@@ -88,6 +103,13 @@ Runs on `http://127.0.0.1:8000`. Endpoints:
 - `POST /api/claims/verify`: Verify and persist custom claim proposals.
 - `POST /api/cases/{id}/claims/demo`: Execute signature Claim Guard demo bundle on a case.
 - `POST /api/cases/{id}/claims/propose`: Propose and verify case-specific claims.
+- `GET /api/replay/scenarios`: List approved Replay Lab scenario manifests.
+- `GET /api/replay/scenarios/{id}`: Inspect single scenario manifest and expectations.
+- `POST /api/replay/run`: Execute deterministic replay or What-If simulation.
+- `GET /api/replay/runs`: Query historical replay run audit records.
+- `GET /api/replay/runs/{id}`: Inspect single replay run report snapshot.
+- `POST /api/replay/compare`: Compare two historical runs side-by-side.
+- `POST /api/replay/reset`: Safely reset replay history without touching security data.
 
 #### 2. Kiro Crew Application UI
 ```powershell
@@ -100,15 +122,26 @@ Starts development server:
 npm run dev
 ```
 
-#### 3. Run Quality Gates & Tests
-Run all 169 backend tests:
+#### 3. Run Production Server (Unified Single-Container Runner)
+To run the unified server (serving both frontend and backend on port 8000 with demo mode):
+```powershell
+python scripts/run_production_server.py --port 8000
+```
+
+#### 4. Run Quality Gates & Tests
+Run all 235 backend tests:
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-Run end-to-end quality gate hook (tests + manifest + build + headless browser + 5 real workflow verification scripts across all 9 gates):
+Run end-to-end quality gate hook (tests + manifest + build + headless browser + 6 real workflow verification scripts across all 10 gates):
 ```powershell
 powershell -ExecutionPolicy Bypass -File .kiro/hooks/validate-all.ps1
+```
+
+Run 17-step hosted judge verification against any local or deployed URL:
+```powershell
+python scripts/verify_hosted_demo.py --url http://127.0.0.1:8000
 ```
 Builds the canonical Kiro Crew package into `dist/index.mjs` matching the Kiro Crew App Kit manifest (`app.json`).
 

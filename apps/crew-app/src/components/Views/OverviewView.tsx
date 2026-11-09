@@ -37,6 +37,80 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </div>
       </section>
 
+      {/* Judge Walkthrough Quick-Start */}
+      <section
+        className="sentinel-card"
+        style={{
+          background: 'linear-gradient(135deg, rgba(30, 58, 138, 0.25) 0%, rgba(15, 23, 42, 0.4) 100%)',
+          border: '1px solid rgba(56, 189, 248, 0.3)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: '#38bdf8', fontSize: '12px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>
+              <span>Judge Evaluation Guide &bull; 2-Minute Guided Walkthrough</span>
+            </div>
+            <h3 style={{ fontSize: '18px', fontWeight: 600, color: '#f8fafc', marginBottom: '8px' }}>
+              How to Evaluate Sentinel in Minutes
+            </h3>
+            <p style={{ color: '#cbd5e1', fontSize: '13px', lineHeight: 1.6, maxWidth: '780px', marginBottom: '14px' }}>
+              Sentinel proves that defensive AI can be held to verifiable security standards. No synthetic shortcuts or fake results are used. Use the Replay Lab to run real end-to-end incident investigations:
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+              <div style={{ background: 'rgba(0,0,0,0.3)', padding: '10px 12px', borderRadius: '6px', borderLeft: '3px solid #38bdf8' }}>
+                <strong style={{ color: '#38bdf8', fontSize: '12px' }}>1. Replay Incidents</strong>
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Execute Scenario A, B, or C through the live 7-stage pipeline.</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', padding: '10px 12px', borderRadius: '6px', borderLeft: '3px solid #22c55e' }}>
+                <strong style={{ color: '#22c55e', fontSize: '12px' }}>2. Trace Provenance</strong>
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Every finding and case links to source SHA-256 and line numbers.</div>
+              </div>
+              <div style={{ background: 'rgba(0,0,0,0.3)', padding: '10px 12px', borderRadius: '6px', borderLeft: '3px solid #ef4444' }}>
+                <strong style={{ color: '#ef4444', fontSize: '12px' }}>3. Test Claim Guard</strong>
+                <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '2px' }}>Watch unproven claims and hallucinations get mathematically blocked.</div>
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: '200px' }}>
+            <button
+              onClick={() => onNavigate('replay')}
+              style={{
+                background: '#2563eb',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '10px 16px',
+                fontWeight: 600,
+                fontSize: '13px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                boxShadow: '0 4px 12px rgba(37, 99, 235, 0.3)',
+              }}
+            >
+              <span>Launch Replay Lab</span>
+              <ArrowRightIcon size={14} />
+            </button>
+            <button
+              onClick={() => onNavigate('investigations')}
+              style={{
+                background: 'rgba(255, 255, 255, 0.05)',
+                color: '#e2e8f0',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                fontSize: '12px',
+                cursor: 'pointer',
+              }}
+            >
+              View Active Cases
+            </button>
+          </div>
+        </div>
+      </section>
+
       {/* Backend Engine Status Banner */}
       <section className="sentinel-card" aria-labelledby="engine-status-heading">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
@@ -163,7 +237,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             <p style={{ fontSize: '13px', color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: '12px' }}>
               Files from a single operator-confirmed directory are parsed with SHA-256 idempotency and automatic secret redaction.
             </p>
-            <span className="badge-planned" style={{ marginLeft: 0 }}>Sprint 2 Delivery</span>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: '#22c55e', background: 'rgba(34, 197, 94, 0.15)', padding: '2px 8px', borderRadius: '4px' }}>Operational</span>
           </div>
 
           <div className="sentinel-card">
@@ -172,7 +246,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             <p style={{ fontSize: '13px', color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: '12px' }}>
               Versioned detection rules evaluate conditions against normalized event streams, emitting findings linked to supporting record IDs.
             </p>
-            <span className="badge-planned" style={{ marginLeft: 0 }}>Sprint 4 Delivery</span>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: '#22c55e', background: 'rgba(34, 197, 94, 0.15)', padding: '2px 8px', borderRadius: '4px' }}>Operational</span>
           </div>
 
           <div className="sentinel-card">
@@ -181,7 +255,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             <p style={{ fontSize: '13px', color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: '12px' }}>
               A deterministic verifier mathematically checks typed AI claim proposals against case evidence before rendering them as facts.
             </p>
-            <span className="badge-planned" style={{ marginLeft: 0 }}>Sprint 6 Delivery</span>
+            <span style={{ fontSize: '11px', fontWeight: 600, color: '#22c55e', background: 'rgba(34, 197, 94, 0.15)', padding: '2px 8px', borderRadius: '4px' }}>Operational</span>
           </div>
         </div>
       </section>

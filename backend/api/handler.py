@@ -2,9 +2,14 @@
 
 import json
 import logging
+import mimetypes
+import os
+import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
-from typing import Optional
+from pathlib import Path
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from backend.api.upload import parse_import_payload
@@ -24,6 +29,12 @@ from backend.parsers.registry import list_available_parsers
 from backend.persistence.connection import get_connection
 from backend.persistence.migrations import apply_migrations
 from backend.persistence.repository import IngestionRepository
+from backend.replay.engine import ReplayEngine
+from backend.replay.models import WhatIfConfig
+from backend.replay.scenarios import (
+    get_scenario_manifest,
+    list_scenario_manifests,
+)
 
 logger = logging.getLogger("sentinel.api")
 
@@ -34,6 +45,32 @@ _norm_engine: Optional[NormalizationEngine] = None
 _detection_engine: Optional[DetectionEngine] = None
 _correlation_engine: Optional[CorrelationEngine] = None
 _claim_engine: Optional[ClaimGuardEngine] = None
+_replay_engine: Optional[ReplayEngine] = None
+
+
+class RateLimiter:
+    """Thread-safe in-memory rate limiter using a rolling 60-second window."""
+
+    def __init__(self, limit_per_minute: int = 60) -> None:
+        self.limit = limit_per_minute
+        self._requests: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+
+    def is_allowed(self, client_ip: str) -> bool:
+        now = time.time()
+        cutoff = now - 60.0
+        with self._lock:
+            timestamps = self._requests.setdefault(client_ip, [])
+            filtered = [t for t in timestamps if t > cutoff]
+            if len(filtered) >= self.limit:
+                self._requests[client_ip] = filtered
+                return False
+            filtered.append(now)
+            self._requests[client_ip] = filtered
+            return True
+
+
+_rate_limiter = RateLimiter(limit_per_minute=60)
 
 
 def get_repository() -> IngestionRepository:
@@ -45,6 +82,12 @@ def get_repository() -> IngestionRepository:
         apply_migrations(conn)
         _repo = IngestionRepository(conn)
         _repo.reconcile_pending_jobs()
+        if settings.demo_mode and settings.demo_seed_on_startup:
+            try:
+                from backend.persistence.demo_seeder import seed_demo_baseline_if_needed
+                seed_demo_baseline_if_needed(_repo)
+            except Exception as seeder_err:
+                logger.warning("Could not seed demo baseline: %s", seeder_err)
     return _repo
 
 
@@ -90,6 +133,14 @@ def get_claim_engine() -> ClaimGuardEngine:
     return _claim_engine
 
 
+def get_replay_engine() -> ReplayEngine:
+    """Obtain or initialize the Replay Lab deterministic engine."""
+    global _replay_engine
+    if _replay_engine is None:
+        _replay_engine = ReplayEngine(main_repo=get_repository())
+    return _replay_engine
+
+
 class SentinelRequestHandler(BaseHTTPRequestHandler):
     """Standard HTTP request handler providing health, ingestion, normalization, and detection endpoints."""
 
@@ -117,6 +168,35 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Requested-With")
             self.send_header("Access-Control-Max-Age", "86400")
+
+    def _serve_static_file(
+        self,
+        file_path: Path,
+        origin: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> None:
+        """Serve a static file with appropriate Content-Type, security headers, and caching."""
+        if not content_type:
+            guessed, _ = mimetypes.guess_type(str(file_path))
+            content_type = guessed or "application/octet-stream"
+
+        try:
+            content_bytes = file_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(content_bytes)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            if "text/html" in content_type:
+                self.send_header("Cache-Control", "no-cache, must-revalidate")
+            else:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self._apply_cors_headers(origin)
+            self.end_headers()
+            self.wfile.write(content_bytes)
+        except Exception as e:
+            logger.error("Failed to serve static file %s: %s", file_path, e)
+            self._send_json_response(500, {"error": "Internal Server Error", "message": "Failed to read static file."}, origin=origin)
 
     def _send_json_response(self, status_code: int, data: dict, origin: Optional[str] = None) -> None:
         """Serialize and send a JSON response with security headers."""
@@ -163,9 +243,31 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "version": settings.version,
                     "environment": settings.environment,
+                    "demo_mode": settings.demo_mode,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 self._send_json_response(200, payload, origin=origin)
+                return
+
+            # 1b. Readiness probe endpoints
+            if clean_path in ("/ready", "/api/ready"):
+                settings = get_settings()
+                repo = get_repository()
+                try:
+                    cur = repo.conn.execute("SELECT 1;")
+                    db_ok = cur.fetchone()[0] == 1
+                except Exception:
+                    db_ok = False
+                payload = {
+                    "app": settings.app_name,
+                    "status": "ready" if db_ok else "degraded",
+                    "database": "connected" if db_ok else "unreachable",
+                    "demo_mode": settings.demo_mode,
+                    "version": settings.version,
+                    "environment": settings.environment,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                self._send_json_response(200 if db_ok else 503, payload, origin=origin)
                 return
 
             # 2. Registered parser profiles
@@ -483,6 +585,92 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(200, case, origin=origin)
                 return
 
+            # 21. Replay Lab scenarios list (Phase 7)
+            if clean_path == "/api/replay/scenarios":
+                manifests = list_scenario_manifests()
+                self._send_json_response(200, {
+                    "scenarios": [m.to_dict() for m in manifests],
+                    "total": len(manifests),
+                }, origin=origin)
+                return
+
+            # 22. Replay Lab scenario detail (Phase 7)
+            if clean_path.startswith("/api/replay/scenarios/"):
+                scenario_id = clean_path[len("/api/replay/scenarios/"):].strip()
+                manifest = get_scenario_manifest(scenario_id)
+                if not manifest:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Scenario '{scenario_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, {"scenario": manifest.to_dict()}, origin=origin)
+                return
+
+            # 23. Replay Lab runs list (Phase 7)
+            if clean_path == "/api/replay/runs":
+                query_params = parse_qs(parsed_url.query)
+                scenario_id = query_params.get("scenario_id", [None])[0]
+                try:
+                    limit = min(int(query_params.get("limit", [50])[0]), 100)
+                    offset = max(int(query_params.get("offset", [0])[0]), 0)
+                except ValueError:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Invalid limit or offset parameter."}, origin=origin)
+                    return
+                repo = get_repository()
+                runs, total = repo.list_replay_runs(scenario_id=scenario_id, limit=limit, offset=offset)
+                self._send_json_response(200, {
+                    "runs": runs,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                }, origin=origin)
+                return
+
+            # 24. Replay Lab single run report (Phase 7)
+            if clean_path.startswith("/api/replay/runs/"):
+                replay_id = clean_path[len("/api/replay/runs/"):].strip()
+                if not replay_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing replay ID."}, origin=origin)
+                    return
+                repo = get_repository()
+                run_data = repo.get_replay_run(replay_id)
+                if not run_data:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Replay run '{replay_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, {"run": run_data}, origin=origin)
+                return
+
+            # 25. Static asset & SPA fallback serving
+            settings = get_settings()
+            if settings.static_dir and os.path.isdir(settings.static_dir):
+                static_root = Path(settings.static_dir).resolve()
+                rel_path = clean_path.lstrip("/")
+                if rel_path:
+                    target_file = (static_root / rel_path).resolve()
+                    if str(target_file).startswith(str(static_root)) and target_file.is_file():
+                        self._serve_static_file(target_file, origin=origin)
+                        return
+
+                # SPA fallback: Serve index.html for known client-side routes or root
+                known_spa_routes = {
+                    "",
+                    "/",
+                    "/index.html",
+                    "/overview",
+                    "/sources",
+                    "/events",
+                    "/findings",
+                    "/investigations",
+                    "/cases",
+                    "/replay",
+                }
+                accept_header = self.headers.get("Accept", "")
+                is_html_browser_nav = "text/html" in accept_header and "." not in clean_path and not clean_path.startswith("/api/")
+
+                if clean_path in known_spa_routes or is_html_browser_nav:
+                    index_file = static_root / "index.html"
+                    if index_file.is_file():
+                        self._serve_static_file(index_file, origin=origin, content_type="text/html; charset=utf-8")
+                        return
+
             # 404 for unhandled paths
             self._send_json_response(404, {
                 "error": "Not Found",
@@ -507,7 +695,42 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
             parsed_url = urlparse(self.path)
             clean_path = parsed_url.path.rstrip("/")
 
+            # Rate-limit expensive / state-changing endpoints
+            expensive_paths = (
+                "/api/replay/run",
+                "/api/replay/compare",
+                "/api/replay/reset",
+                "/api/cases/correlate",
+                "/api/cases/run",
+                "/api/detection/run",
+                "/api/normalization/run",
+            )
+            if clean_path in expensive_paths:
+                settings = get_settings()
+                if settings.environment != "test" and settings.rate_limit_per_minute > 0:
+                    _rate_limiter.limit = settings.rate_limit_per_minute
+                    client_ip = (
+                        self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                        or (self.client_address[0] if self.client_address else "127.0.0.1")
+                    )
+                    if not _rate_limiter.is_allowed(client_ip):
+                        self._send_json_response(429, {
+                            "error": "Too Many Requests",
+                            "status": 429,
+                            "message": "Rate limit exceeded for simulation/expensive operations. Please wait a moment before trying again.",
+                        }, origin=origin)
+                        return
+
             if clean_path == "/api/import":
+                settings = get_settings()
+                if settings.demo_mode:
+                    self._send_json_response(403, {
+                        "error": "Forbidden",
+                        "status": 403,
+                        "message": "Public Demo Mode Active: Log ingestion and file uploads are restricted to approved synthetic scenarios in the Replay Lab.",
+                    }, origin=origin)
+                    return
+
                 content_length_str = self.headers.get("Content-Length")
                 if not content_length_str:
                     self._send_json_response(400, {
@@ -762,7 +985,7 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                         "report": verification_report,
                     }, origin=origin)
                     return
-                except ValueError as ve:
+                except (KeyError, ValueError) as ve:
                     self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
                     return
 
@@ -839,6 +1062,105 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                     except ValueError as ve:
                         self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
                         return
+
+            # -------------------------------------------------------------
+            # Replay Lab Execution Endpoints (Phase 7)
+            # -------------------------------------------------------------
+
+            # Execute a deterministic scenario or What-If simulation
+            if clean_path == "/api/replay/run":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+                try:
+                    payload_data = json.loads(body.decode("utf-8")) if body else {}
+                except Exception as e:
+                    self._send_json_response(400, {"error": "Bad Request", "message": f"Malformed JSON: {e}"}, origin=origin)
+                    return
+
+                scenario_id = payload_data.get("scenario_id")
+                if not scenario_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing required field 'scenario_id'."}, origin=origin)
+                    return
+
+                what_if_dict = payload_data.get("what_if")
+                what_if: Optional[WhatIfConfig] = None
+                if what_if_dict and isinstance(what_if_dict, dict):
+                    what_if = WhatIfConfig(
+                        what_if_id=what_if_dict.get("what_if_id", "wif_custom"),
+                        description=what_if_dict.get("description", "Custom simulation"),
+                        rule_overrides=what_if_dict.get("rule_overrides"),
+                        correlation_overrides=what_if_dict.get("correlation_overrides"),
+                        excluded_records=what_if_dict.get("excluded_records"),
+                    )
+
+                engine = get_replay_engine()
+                try:
+                    report = engine.run_scenario(scenario_id=scenario_id, what_if=what_if)
+                    self._send_json_response(200, {
+                        "status": "success",
+                        "run": report.to_dict(),
+                    }, origin=origin)
+                    return
+                except (KeyError, ValueError) as ve:
+                    self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
+                    return
+                except Exception as ex:
+                    logger.error("Error executing replay scenario %s: %s", scenario_id, ex, exc_info=True)
+                    self._send_json_response(500, {"error": "Internal Server Error", "message": str(ex)}, origin=origin)
+                    return
+
+            # Compare two historical replay runs
+            if clean_path == "/api/replay/compare":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+                try:
+                    payload_data = json.loads(body.decode("utf-8")) if body else {}
+                except Exception as e:
+                    self._send_json_response(400, {"error": "Bad Request", "message": f"Malformed JSON: {e}"}, origin=origin)
+                    return
+
+                run_a_id = payload_data.get("run_a_id")
+                run_b_id = payload_data.get("run_b_id")
+                if not run_a_id or not run_b_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Payload must include 'run_a_id' and 'run_b_id'."}, origin=origin)
+                    return
+
+                engine = get_replay_engine()
+                try:
+                    comparison = engine.compare_runs(run_a_id, run_b_id)
+                    self._send_json_response(200, {
+                        "status": "success",
+                        "comparison": comparison,
+                    }, origin=origin)
+                    return
+                except (KeyError, ValueError) as ve:
+                    self._send_json_response(404, {"error": "Not Found", "message": str(ve)}, origin=origin)
+                    return
+                except Exception as ex:
+                    logger.error("Error comparing replay runs: %s", ex, exc_info=True)
+                    self._send_json_response(500, {"error": "Internal Server Error", "message": str(ex)}, origin=origin)
+                    return
+
+            # Reset replay runs safely without touching core security data
+            if clean_path == "/api/replay/reset":
+                content_len = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_len) if content_len > 0 else b"{}"
+                payload_data = {}
+                if body:
+                    try:
+                        payload_data = json.loads(body.decode("utf-8"))
+                    except Exception:
+                        pass
+
+                scenario_id = payload_data.get("scenario_id") if isinstance(payload_data, dict) else None
+                repo = get_repository()
+                deleted = repo.reset_replay_runs(scenario_id=scenario_id)
+                self._send_json_response(200, {
+                    "status": "success",
+                    "deleted_count": deleted,
+                    "message": f"Safely reset {deleted} replay run record(s). Core security data untouched.",
+                }, origin=origin)
+                return
 
             # 404 for unhandled POST paths
             self._send_json_response(404, {

@@ -115,7 +115,7 @@ def main() -> None:
             ("investigations", "Investigation Cases"),
             ("findings", "Deterministic Findings"),
             ("events", "Canonical Events"),
-            ("replay", "Replay Lab Module"),
+            ("replay", "Replay Lab"),
             ("sources", "Data Ingestion"),
             ("digests", "Digests Module"),
             ("settings", "Settings Module"),
@@ -160,6 +160,14 @@ def main() -> None:
         assert "Run Correlation Engine" in cases_dom, "Expected 'Run Correlation Engine' button in Cases view"
         assert "Open Cases" in cases_dom, "Expected 'Open Cases' metric card in Cases view"
         print("    [PASS] Investigations/Cases view verified: metrics bar, correlation triggers, and case table present.")
+
+        # Verify Replay Lab view specific components
+        print("\n--> [Test 3e/5] Verifying Replay Lab view interactive controls and approved scenarios...")
+        replay_dom = run_headless_browser(browser_exe, "http://127.0.0.1:4173/?view=replay")
+        assert "Replay Lab" in replay_dom, "Expected 'Replay Lab' in Replay view"
+        assert "Approved Incident Scenarios" in replay_dom, "Expected 'Approved Incident Scenarios' in Replay view"
+        assert "Run Standard Replay" in replay_dom, "Expected 'Run Standard Replay' button in Replay view"
+        print("    [PASS] Replay Lab view verified: scenario cards, execution controls, and deterministic engine status present.")
 
         # STEP 4: Verify Offline / Backend Disconnected State
         print("\n--> [Test 4/5] Testing Backend Disconnect and Offline Error State...")

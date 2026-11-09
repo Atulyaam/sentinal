@@ -1,0 +1,13 @@
+# ==============================================================================
+# PROJECT SENTINEL — PYTHON DEPENDENCIES
+# ==============================================================================
+# Project Sentinel is built entirely using Python's robust standard library:
+#   - sqlite3 (ACID-compliant storage, WAL mode, foreign keys)
+#   - http.server (ThreadingHTTPServer, BaseHTTPRequestHandler)
+#   - hashlib & hmac (SHA-256 idempotency & tamper-evident verification)
+#   - json & dataclasses (strict typed contracts & serialization)
+#   - logging & urllib (structured security audit logs & safe URI parsing)
+#
+# No external third-party packages are required for runtime or production execution.
+# Zero dependency supply-chain attack surface.
+

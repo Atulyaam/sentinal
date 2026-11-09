@@ -41,8 +41,6 @@ export const ROUTES: RouteMeta[] = [
     id: 'replay',
     label: 'Replay Lab',
     icon: 'replay',
-    planned: true,
-    sprint: 'Sprint 7',
     description: 'Deterministic scenario replay runner asserting verifiable detection outputs.',
   },
   {

@@ -23,6 +23,7 @@ export interface BackendHealthResponse {
   version: string;
   timestamp?: string;
   environment?: string;
+  demo_mode?: boolean;
 }
 
 export type ConnectionState = 'connected' | 'connecting' | 'disconnected';
@@ -326,6 +327,124 @@ export interface ClaimTemplate {
   description: string;
   format: string;
   required_params: string[];
+}
+
+// ----------------------------------------------------------------------------
+// Phase 7: Replay Lab Types
+// ----------------------------------------------------------------------------
+
+export interface ScenarioFixtureMeta {
+  filename: string;
+  parser_id: string;
+  sha256: string;
+  size_bytes: number;
+  description: string;
+}
+
+export interface ScenarioExpectationsMeta {
+  expected_imported_records: number;
+  expected_normalized_events: number;
+  expected_rules: string[];
+  expected_findings_count: number;
+  expected_cases_count: number;
+  expected_claim_outcomes: Record<string, string>;
+  expected_timeline_types: string[];
+}
+
+export interface SupportedWhatIf {
+  what_if_id: string;
+  name: string;
+  description: string;
+  rule_overrides?: Record<string, any>;
+  correlation_overrides?: Record<string, any>;
+  excluded_records?: number[];
+}
+
+export interface ScenarioManifestMeta {
+  scenario_id: string;
+  name: string;
+  version: string;
+  category: string;
+  description: string;
+  story: string;
+  learning_objective: string;
+  fixtures: ScenarioFixtureMeta[];
+  claim_proposals: Record<string, any>[];
+  expectations: ScenarioExpectationsMeta;
+  supported_what_ifs: SupportedWhatIf[];
+}
+
+export interface ReplayAssertionItem {
+  assertion_id: string;
+  category: string;
+  description: string;
+  expected: any;
+  actual: any;
+  passed: boolean;
+  message: string;
+}
+
+export interface ReplayStageItem {
+  stage_id: string;
+  name: string;
+  status: 'completed' | 'failed' | 'skipped';
+  duration_ms: number;
+  summary: string;
+}
+
+export interface ReplayMetricsMeta {
+  imported_records: number;
+  normalized_events: number;
+  findings_count: number;
+  cases_count: number;
+  claims_total: number;
+  claims_verified: number;
+  claims_qualified: number;
+  claims_blocked: number;
+  assertions_total: number;
+  assertions_passed: number;
+  assertions_failed: number;
+  duration_ms: number;
+}
+
+export interface ReplayRunReportMeta {
+  replay_id: string;
+  scenario_id: string;
+  scenario_name: string;
+  scenario_version: string;
+  status: 'completed' | 'failed';
+  mode: 'standard' | 'what_if';
+  pipeline_versions: Record<string, string>;
+  fixture_checksums: Record<string, string>;
+  what_if_config: Record<string, any>;
+  metrics: ReplayMetricsMeta;
+  assertion_results: ReplayAssertionItem[];
+  stages: ReplayStageItem[];
+  cases_snapshot: any[];
+  claims_snapshot: any[];
+  what_if_diff?: Record<string, any> | null;
+  error_summary?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+}
+
+export interface ReplayComparisonMeta {
+  run_a_id: string;
+  run_b_id: string;
+  scenario_id: string;
+  scenario_version: string;
+  is_identical: boolean;
+  metric_deltas: Record<string, number>;
+  metrics_delta?: Record<string, number>;
+  findings_added: string[];
+  findings_removed: string[];
+  cases_added: number;
+  cases_removed: number;
+  assertion_mismatches: string[];
+  run_a_duration_ms: number;
+  run_b_duration_ms: number;
+  pipeline_versions_match: boolean;
+  fixture_checksums_match: boolean;
 }
 
 

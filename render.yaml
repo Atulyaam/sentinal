@@ -1,0 +1,28 @@
+# ==============================================================================
+# PROJECT SENTINEL — RENDER BLUEPRINT
+# Deploy unified single-container judge demo to Render
+# ==============================================================================
+services:
+  - type: web
+    name: project-sentinel
+    runtime: docker
+    dockerfilePath: Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /health
+    disk:
+      name: sentinel-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: SENTINEL_ENV
+        value: production
+      - key: SENTINEL_DEMO_MODE
+        value: "true"
+      - key: SENTINEL_DEMO_SEED
+        value: "true"
+      - key: SENTINEL_DB_PATH
+        value: /data/sentinel.db
+      - key: SENTINEL_HOST
+        value: 0.0.0.0
+
