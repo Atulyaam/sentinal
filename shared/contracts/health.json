@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BackendHealthResponse",
+  "type": "object",
+  "required": ["app", "status", "version"],
+  "properties": {
+    "app": { "type": "string" },
+    "status": { "type": "string", "enum": ["ok", "degraded", "error"] },
+    "version": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "environment": { "type": "string" }
+  },
+  "additionalProperties": false
+}

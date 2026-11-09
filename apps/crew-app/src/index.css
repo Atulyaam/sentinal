@@ -1,0 +1,207 @@
+/* Design System Styles — Project Sentinel */
+@layer base {
+  :root {
+    --color-bg-canvas: #0B0D11;
+    --color-bg-panel: #11141B;
+    --color-bg-subtle: #161B22;
+    --color-bg-muted: #1E232B;
+    --color-border: #21262D;
+    --color-border-hover: #30363D;
+    
+    --color-text-primary: #F0F6FC;
+    --color-text-secondary: #8B949E;
+    --color-text-muted: #6E7681;
+    
+    --color-accent: #388BFD;
+    --color-accent-subtle: rgba(56, 139, 253, 0.12);
+    --color-accent-hover: #1F6FEB;
+    
+    --color-success: #3FB950;
+    --color-success-bg: rgba(63, 185, 80, 0.15);
+    
+    --color-warning: #D29922;
+    --color-warning-bg: rgba(210, 153, 34, 0.15);
+    
+    --color-danger: #F85149;
+    --color-danger-bg: rgba(248, 81, 73, 0.15);
+    
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: 'JetBrains Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html, body {
+    height: 100%;
+    background-color: var(--color-bg-canvas);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Accessibility focus ring */
+  *:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Respect prefers-reduced-motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Layout utilities */
+.sentinel-app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--color-bg-canvas);
+}
+
+.sentinel-sidebar {
+  width: 250px;
+  min-width: 250px;
+  background-color: var(--color-bg-panel);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sentinel-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background-color: var(--color-bg-canvas);
+}
+
+.sentinel-header {
+  height: 60px;
+  min-height: 60px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
+  background-color: var(--color-bg-panel);
+}
+
+.sentinel-content {
+  flex: 1;
+  padding: 24px;
+  max-width: 1300px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Card components */
+.sentinel-card {
+  background-color: var(--color-bg-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 20px;
+  transition: border-color 0.15s ease;
+}
+
+.sentinel-card:hover {
+  border-color: var(--color-border-hover);
+}
+
+/* Status Indicator Pill */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.status-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.status-pill.connected {
+  background-color: var(--color-success-bg);
+  color: var(--color-success);
+}
+.status-pill.connected .status-pill-dot {
+  background-color: var(--color-success);
+}
+
+.status-pill.disconnected {
+  background-color: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+.status-pill.disconnected .status-pill-dot {
+  background-color: var(--color-danger);
+}
+
+.status-pill.connecting {
+  background-color: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+.status-pill.connecting .status-pill-dot {
+  background-color: var(--color-warning);
+}
+
+/* Navigation items */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  margin: 2px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  width: calc(100% - 16px);
+  transition: all 0.15s ease;
+}
+
+.nav-item:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-bg-subtle);
+}
+
+.nav-item.active {
+  color: var(--color-text-primary);
+  background-color: var(--color-accent-subtle);
+  border-left: 3px solid var(--color-accent);
+}
+
+/* Badges */
+.badge-planned {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: var(--color-bg-muted);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  margin-left: auto;
+}

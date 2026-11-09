@@ -1,0 +1,9 @@
+timestamp,username,auth_result,source_ip,session_id
+2026-11-09T08:00:01Z,secops_admin,SUCCESS,192.168.1.100,sess_a1b2c3
+2026-11-09T08:00:15Z,analyst_jdoe,FAILURE,192.168.1.105,sess_d4e5f6
+2026-11-09T08:01:22Z,contractor_dev,CHALLENGE,10.0.0.50,sess_789abc
+2026-11-09T08:02:00Z,locked_user,LOCKED,203.0.113.45,sess_bad001
+2026-11-09T08:03:00Z,invalid_result_user,PENDING_REVIEW,10.0.0.51,sess_err1
+2026-11-09T08:04:00Z,,SUCCESS,10.0.0.52,sess_err2
+2026-11-09T08:05:00Z,mismatch_user,FAILURE,extra_column_1,extra_column_2,extra_column_3
+

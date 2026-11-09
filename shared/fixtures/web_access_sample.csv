@@ -1,0 +1,8 @@
+timestamp,http_method,request_path,status_code,source_ip,user_agent
+2026-11-09T08:10:00Z,GET,/api/health,200,127.0.0.1,Mozilla/5.0
+2026-11-09T08:10:05Z,POST,/api/v1/authenticate,401,192.168.1.50,SentinelAgent/1.0
+2026-11-09T08:10:12Z,GET,/static/app.js,304,192.168.1.55,Chrome/120.0
+2026-11-09T08:11:00Z,UNKNOWN_VERB,/admin/export,200,10.0.0.99,curl/8.0
+2026-11-09T08:12:00Z,GET,/api/data,NOT_A_NUMBER,10.0.0.99,curl/8.0
+2026-11-09T08:13:00Z,POST,/api/submit,999,10.0.0.99,curl/8.0
+

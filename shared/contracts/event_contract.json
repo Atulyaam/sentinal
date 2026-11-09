@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NormalizedEventContract",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "source_type",
+    "source_file",
+    "source_line",
+    "source_sha256",
+    "event_type",
+    "attributes"
+  ],
+  "properties": {
+    "event_id": { "type": "string" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "source_type": { "type": "string" },
+    "source_file": { "type": "string" },
+    "source_line": { "type": "integer", "minimum": 1 },
+    "source_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "event_type": { "type": "string" },
+    "user_principal": { "type": ["string", "null"] },
+    "source_ip": { "type": ["string", "null"] },
+    "target_resource": { "type": ["string", "null"] },
+    "status": { "type": "string", "enum": ["SUCCESS", "FAILURE", "ERROR", "UNKNOWN"] },
+    "attributes": { "type": "object" }
+  }
+}

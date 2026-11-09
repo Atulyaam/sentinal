@@ -1,0 +1,41 @@
+{
+  "name": "project-sentinel",
+  "version": "0.1.0",
+  "displayName": "Project Sentinel",
+  "description": "Proof-Carrying Defensive Security Investigation Workbench",
+  "author": "Project Sentinel Team",
+  "license": "Apache-2.0",
+  "minKiroCrewVersion": "0.1.0",
+  "iconPath": "assets/icon.svg",
+  "agents": [
+    "agents/sentinel-investigator.json"
+  ],
+  "skills": [
+    "skills/evidence-led-investigation"
+  ],
+  "ui": {
+    "entry": "dist/index.mjs",
+    "pages": [
+      {
+        "route": "/apps/project-sentinel",
+        "label": "Sentinel Workbench",
+        "icon": "ShieldAlert"
+      }
+    ]
+  },
+  "permissions": {
+    "api": [
+      "/health",
+      "/api/health",
+      "/api/status",
+      "/api/cases",
+      "/api/findings",
+      "/api/events",
+      "/api/replay/scenarios"
+    ],
+    "events": [
+      "notification"
+    ]
+  }
+}
+
