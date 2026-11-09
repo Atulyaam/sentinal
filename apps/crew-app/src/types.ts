@@ -139,3 +139,56 @@ export interface NormalizationError {
   safe_error_message: string;
   created_at: string;
 }
+
+export type FindingSeverity = 'Critical' | 'High' | 'Medium' | 'Low' | 'Info';
+export type FindingStatus = 'open' | 'acknowledged' | 'resolved' | 'dismissed';
+
+export interface Finding {
+  finding_id: string;
+  rule_id: string;
+  rule_version: string;
+  rule_config_hash: string;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  title: string;
+  description: string;
+  first_observed_at: string;
+  last_observed_at: string;
+  matched_entity: string | null;
+  matched_conditions: Record<string, any>;
+  supporting_event_ids: string[];
+  supporting_events?: NormalizedEvent[];
+  limitations: string;
+  dedupe_key: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DetectionStats {
+  total_findings: number;
+  findings_by_severity: Record<string, number>;
+  findings_by_status: Record<string, number>;
+  last_evaluation?: {
+    evaluation_id: string;
+    evaluated_at: string;
+    rule_count: number;
+    events_scanned: number;
+    findings_generated: number;
+    findings_duplicate: number;
+    duration_ms: number;
+  } | null;
+}
+
+export interface DetectionRule {
+  rule_id: string;
+  version: string;
+  name: string;
+  description: string;
+  severity: FindingSeverity;
+  enabled: number | boolean;
+  config_hash: string;
+  config: Record<string, any>;
+  limitations?: string;
+  created_at?: string;
+  updated_at?: string;
+}

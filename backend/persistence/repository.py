@@ -354,8 +354,8 @@ class IngestionRepository:
                         event_id, import_id, record_id, source_id, record_number,
                         timestamp, source_type, source_file, source_line, source_sha256,
                         event_type, user_principal, source_ip, target_resource,
-                        status, attributes_json, normalization_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        status, attributes_json, parser_version, normalization_version, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     (
                         evt["event_id"],
@@ -374,6 +374,7 @@ class IngestionRepository:
                         evt.get("target_resource"),
                         evt.get("status", "UNKNOWN"),
                         attrs_json,
+                        evt.get("parser_version", "1.0.0"),
                         evt.get("normalization_version", "1.0.0"),
                         now,
                     ),
@@ -419,7 +420,7 @@ class IngestionRepository:
             SELECT event_id, import_id, record_id, source_id, record_number,
                    timestamp, source_type, source_file, source_line, source_sha256,
                    event_type, user_principal, source_ip, target_resource,
-                   status, attributes_json, normalization_version, created_at
+                   status, attributes_json, parser_version, normalization_version, created_at
             FROM normalized_events
             WHERE event_id = ?;
             """,
@@ -480,7 +481,7 @@ class IngestionRepository:
             SELECT event_id, import_id, record_id, source_id, record_number,
                    timestamp, source_type, source_file, source_line, source_sha256,
                    event_type, user_principal, source_ip, target_resource,
-                   status, attributes_json, normalization_version, created_at
+                   status, attributes_json, parser_version, normalization_version, created_at
             FROM normalized_events
             {where_sql}
             ORDER BY timestamp DESC
@@ -567,5 +568,350 @@ class IngestionRepository:
             "pending_unnormalized_records": pending_records,
             "events_by_type": by_type,
         }
+
+    # ---------------------------------------------------------
+    # Detection Rules & Findings Management (Phase 4)
+    # ---------------------------------------------------------
+
+    def persist_findings_batch(self, findings: List[Any]) -> Dict[str, int]:
+        """Atomically persist a batch of findings and evidence links in SQLite."""
+        now = datetime.now(timezone.utc).isoformat()
+        persisted = 0
+        duplicates = 0
+
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            for f in findings:
+                f_dict = f.to_dict() if hasattr(f, "to_dict") else dict(f)
+                matched_conds_json = json.dumps(f_dict.get("matched_conditions", {}), ensure_ascii=False)
+                supp_events = f_dict.get("supporting_event_ids", [])
+                supp_events_json = json.dumps(supp_events, ensure_ascii=False)
+
+                cursor = self.conn.execute(
+                    """
+                    INSERT OR IGNORE INTO findings (
+                        finding_id, rule_id, rule_version, rule_config_hash,
+                        severity, status, title, description,
+                        first_observed_at, last_observed_at, matched_entity,
+                        matched_conditions_json, supporting_event_ids_json,
+                        limitations, dedupe_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        f_dict["finding_id"],
+                        f_dict["rule_id"],
+                        f_dict["rule_version"],
+                        f_dict["rule_config_hash"],
+                        f_dict.get("severity", "Medium"),
+                        f_dict.get("status", "open"),
+                        f_dict["title"],
+                        f_dict["description"],
+                        f_dict["first_observed_at"],
+                        f_dict["last_observed_at"],
+                        f_dict.get("matched_entity"),
+                        matched_conds_json,
+                        supp_events_json,
+                        f_dict.get("limitations", ""),
+                        f_dict["dedupe_key"],
+                        now,
+                        now,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    persisted += 1
+                    # Insert junction rows for supporting events
+                    for evt_id in supp_events:
+                        self.conn.execute(
+                            """
+                            INSERT OR IGNORE INTO finding_events (finding_id, event_id)
+                            VALUES (?, ?);
+                            """,
+                            (f_dict["finding_id"], evt_id),
+                        )
+                else:
+                    duplicates += 1
+
+            self.conn.execute("COMMIT;")
+        except Exception:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+        return {"persisted_findings": persisted, "duplicate_findings": duplicates}
+
+    def get_finding(self, finding_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a single finding with deserialized conditions and supporting events."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT finding_id, rule_id, rule_version, rule_config_hash,
+                   severity, status, title, description,
+                   first_observed_at, last_observed_at, matched_entity,
+                   matched_conditions_json, supporting_event_ids_json,
+                   limitations, dedupe_key, created_at, updated_at
+            FROM findings
+            WHERE finding_id = ?;
+            """,
+            (finding_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        finding_dict = dict(row)
+        conds_raw = finding_dict.pop("matched_conditions_json", "{}")
+        try:
+            finding_dict["matched_conditions"] = json.loads(conds_raw)
+        except Exception:
+            finding_dict["matched_conditions"] = {}
+
+        events_raw = finding_dict.pop("supporting_event_ids_json", "[]")
+        try:
+            finding_dict["supporting_event_ids"] = json.loads(events_raw)
+        except Exception:
+            finding_dict["supporting_event_ids"] = []
+
+        # Fetch detailed supporting events from normalized_events
+        if finding_dict["supporting_event_ids"]:
+            placeholders = ",".join("?" for _ in finding_dict["supporting_event_ids"])
+            cursor.execute(
+                f"""
+                SELECT event_id, timestamp, source_type, source_file, source_line,
+                       source_sha256, event_type, user_principal, source_ip,
+                       target_resource, status, attributes_json
+                FROM normalized_events
+                WHERE event_id IN ({placeholders})
+                ORDER BY timestamp ASC;
+                """,
+                tuple(finding_dict["supporting_event_ids"]),
+            )
+            supporting_events = []
+            for ev_row in cursor.fetchall():
+                ev_dict = dict(ev_row)
+                attr_raw = ev_dict.pop("attributes_json", "{}")
+                try:
+                    ev_dict["attributes"] = json.loads(attr_raw)
+                except Exception:
+                    ev_dict["attributes"] = {}
+                supporting_events.append(ev_dict)
+            finding_dict["supporting_events"] = supporting_events
+        else:
+            finding_dict["supporting_events"] = []
+
+        return finding_dict
+
+    def list_findings(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        severity: Optional[str] = None,
+        status: Optional[str] = None,
+        rule_id: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """List findings with optional filtering and pagination."""
+        cursor = self.conn.cursor()
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if severity:
+            where_clauses.append("severity = ?")
+            params.append(severity)
+        if status:
+            where_clauses.append("status = ?")
+            params.append(status)
+        if rule_id:
+            where_clauses.append("rule_id = ?")
+            params.append(rule_id)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Total count query
+        count_query = f"SELECT COUNT(*) FROM findings {where_sql};"
+        cursor.execute(count_query, tuple(params))
+        total_count = cursor.fetchone()[0]
+
+        # Results query
+        data_query = f"""
+            SELECT finding_id, rule_id, rule_version, rule_config_hash,
+                   severity, status, title, description,
+                   first_observed_at, last_observed_at, matched_entity,
+                   matched_conditions_json, supporting_event_ids_json,
+                   limitations, dedupe_key, created_at, updated_at
+            FROM findings
+            {where_sql}
+            ORDER BY last_observed_at DESC, created_at DESC
+            LIMIT ? OFFSET ?;
+        """
+        data_params = list(params) + [limit, offset]
+        cursor.execute(data_query, tuple(data_params))
+
+        results: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            conds_raw = item.pop("matched_conditions_json", "{}")
+            try:
+                item["matched_conditions"] = json.loads(conds_raw)
+            except Exception:
+                item["matched_conditions"] = {}
+
+            events_raw = item.pop("supporting_event_ids_json", "[]")
+            try:
+                item["supporting_event_ids"] = json.loads(events_raw)
+            except Exception:
+                item["supporting_event_ids"] = []
+
+            results.append(item)
+
+        return results, total_count
+
+    def update_finding_status(self, finding_id: str, new_status: str) -> Optional[Dict[str, Any]]:
+        """Update finding status with validation and transactional persistence."""
+        valid_statuses = {"open", "acknowledged", "resolved", "dismissed"}
+        status_clean = new_status.strip().lower()
+        if status_clean not in valid_statuses:
+            raise ValueError(f"Invalid finding status '{new_status}'. Must be one of {sorted(valid_statuses)}")
+
+        now = datetime.now(timezone.utc).isoformat()
+        self.conn.execute("BEGIN IMMEDIATE;")
+        try:
+            cursor = self.conn.execute(
+                """
+                UPDATE findings
+                SET status = ?, updated_at = ?
+                WHERE finding_id = ?;
+                """,
+                (status_clean, now, finding_id),
+            )
+            if cursor.rowcount == 0:
+                self.conn.execute("ROLLBACK;")
+                return None
+            self.conn.execute("COMMIT;")
+        except Exception:
+            self.conn.execute("ROLLBACK;")
+            raise
+
+        return self.get_finding(finding_id)
+
+    def record_evaluation_audit(self, stats: Any) -> None:
+        """Record rule evaluation statistics in audit log."""
+        s = stats.to_dict() if hasattr(stats, "to_dict") else dict(stats)
+        self.conn.execute(
+            """
+            INSERT INTO rule_evaluations (
+                evaluation_id, evaluated_at, rule_count, events_scanned,
+                findings_generated, findings_duplicate, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                s["evaluation_id"],
+                s["evaluated_at"],
+                s["rule_count"],
+                s["events_scanned"],
+                s["findings_generated"],
+                s["findings_duplicate"],
+                s["duration_ms"],
+            ),
+        )
+
+    def get_detection_stats(self) -> Dict[str, Any]:
+        """Return aggregate statistics about findings by severity and status."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM findings;")
+        total_findings = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            SELECT severity, COUNT(*) as count
+            FROM findings
+            GROUP BY severity;
+            """
+        )
+        by_severity = {row["severity"]: row["count"] for row in cursor.fetchall()}
+
+        cursor.execute(
+            """
+            SELECT status, COUNT(*) as count
+            FROM findings
+            GROUP BY status;
+            """
+        )
+        by_status = {row["status"]: row["count"] for row in cursor.fetchall()}
+
+        cursor.execute(
+            """
+            SELECT evaluation_id, evaluated_at, rule_count, events_scanned,
+                   findings_generated, findings_duplicate, duration_ms
+            FROM rule_evaluations
+            ORDER BY evaluated_at DESC
+            LIMIT 1;
+            """
+        )
+        last_eval_row = cursor.fetchone()
+        last_eval = dict(last_eval_row) if last_eval_row else None
+
+        return {
+            "total_findings": total_findings,
+            "findings_by_severity": by_severity,
+            "findings_by_status": by_status,
+            "last_evaluation": last_eval,
+        }
+
+    def list_detection_rules(self) -> List[Dict[str, Any]]:
+        """List all rules stored in detection_rules table."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT rule_id, version, name, description, severity, enabled,
+                   config_hash, rule_definition_json, created_at, updated_at
+            FROM detection_rules
+            ORDER BY rule_id ASC;
+            """
+        )
+        rules: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            cfg_raw = item.pop("rule_definition_json", "{}")
+            try:
+                item["config"] = json.loads(cfg_raw)
+            except Exception:
+                item["config"] = {}
+            rules.append(item)
+        return rules
+
+    def get_detection_rule(self, rule_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a single rule definition from detection_rules table."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT rule_id, version, name, description, severity, enabled,
+                   config_hash, rule_definition_json, created_at, updated_at
+            FROM detection_rules
+            WHERE rule_id = ?;
+            """,
+            (rule_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        cfg_raw = item.pop("rule_definition_json", "{}")
+        try:
+            item["config"] = json.loads(cfg_raw)
+        except Exception:
+            item["config"] = {}
+        return item
+
+    def update_detection_rule_enabled(self, rule_id: str, enabled: bool) -> bool:
+        """Toggle rule enabled status in detection_rules table."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self.conn.execute(
+            """
+            UPDATE detection_rules
+            SET enabled = ?, updated_at = ?
+            WHERE rule_id = ?;
+            """,
+            (1 if enabled else 0, now, rule_id),
+        )
+        return cursor.rowcount > 0
+
 
 

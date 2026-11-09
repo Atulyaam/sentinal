@@ -5,6 +5,7 @@ import { Header } from './components/Header';
 import { OverviewView } from './components/Views/OverviewView';
 import { SourcesView } from './components/Views/SourcesView';
 import { EventsView } from './components/Views/EventsView';
+import { FindingsView } from './components/Views/FindingsView';
 import { PlannedView } from './components/Views/PlannedView';
 
 const BACKEND_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
@@ -149,6 +150,8 @@ export const App: React.FC = () => {
             <SourcesView />
           ) : currentRoute === 'events' ? (
             <EventsView onNavigate={handleNavigate} />
+          ) : currentRoute === 'findings' ? (
+            <FindingsView onNavigate={handleNavigate} />
           ) : (
             <PlannedView
               routeMeta={activeRouteMeta}

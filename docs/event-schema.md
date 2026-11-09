@@ -107,8 +107,8 @@ In Sprint 3, canonical normalization maps `ParsedRecord` into `NormalizedEventCo
 
 | Field Name | Type | Requirement | Description | Validation Rule | Example Value |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `event_id` | String | **Required** | Deterministic unique event identifier. | Derived via SHA-256 hash of `(source_sha256, record_number, parser_id, normalization_version)`. Prefixed with `evt_` and 24 hex characters. | `evt_8f3a1b0c9e7d5f2a1b4c6e8d` |
-| `timestamp` | String | **Required** | Canonical event occurrence time in UTC. | Valid ISO-8601 date-time string terminating in `Z` (or UTC offset). Naive timestamps parsed as UTC with metadata annotation. Invalid timestamps cause normalization rejection. | `2026-11-09T08:00:15Z` |
+| `event_id` | String | **Required** | Deterministic unique event identifier. | Derived via SHA-256 hash of `(source_sha256, record_number, parser_id, parser_version, normalization_version)`. Prefixed with `evt_` and 24 hex characters. | `evt_8f3a1b0c9e7d5f2a1b4c6e8d` |
+| `timestamp` | String | **Required** | Canonical event occurrence time in UTC. | Valid ISO-8601 date-time string in UTC (`...Z`). Naive timestamps without explicit timezone offsets are quarantined under `NORM_TIMEZONE_UNKNOWN` to prevent clock skew. Invalid timestamps cause normalization rejection. | `2026-11-09T08:00:15Z` |
 | `source_type` | String | **Required** | Originating parser profile / format family. | Non-empty string matching one of the supported parser IDs: `generic_jsonl`, `auth_csv`, `web_access_csv`. | `auth_csv` |
 | `source_file` | String | **Required** | Safe filename of the ingested source file. | Basename of original imported file, sanitized of path traversals. | `auth_audit_20261109.csv` |
 | `source_line` | Integer | **Required** | Physical line or row number in the source file. | 1-based positive integer ($\ge 1$). | `42` |
@@ -147,6 +147,7 @@ When a record fails normalization, it is inserted into `normalization_errors` ra
 
 | Error Code | Trigger Condition | Example Safe Message |
 | :--- | :--- | :--- |
+| `NORM_TIMEZONE_UNKNOWN` | Timestamp lacks explicit timezone offset; UTC cannot be assumed | "Record timestamp '2026-11-09 08:00:15' lacks explicit timezone offset; cannot assume UTC." |
 | `NORM_INVALID_TIMESTAMP` | Timestamp is missing, empty, or unparseable | "Unable to parse timestamp 'invalid-date' into UTC ISO-8601" |
 | `NORM_INVALID_PAYLOAD` | Record JSON is corrupted or not a valid dictionary | "Record JSON payload is malformed or not an object" |
 | `NORM_UNKNOWN_PARSER` | Parser profile is not supported by normalization engine | "No normalization mapper registered for parser 'unsupported'" |

@@ -5,17 +5,26 @@ import ipaddress
 import logging
 from typing import Any, Dict, Optional
 
-from backend.normalization.timestamps import parse_and_normalize_timestamp
+from backend.normalization.timestamps import (
+    NaiveTimestampError,
+    parse_and_normalize_timestamp,
+)
 
 logger = logging.getLogger("sentinel.normalization.mappers")
 
 
-def compute_event_id(source_sha256: str, record_number: int, parser_id: str, norm_version: str) -> str:
+def compute_event_id(
+    source_sha256: str,
+    record_number: int,
+    parser_id: str,
+    parser_version: str,
+    norm_version: str,
+) -> str:
     """
     Generate a deterministic, collision-resistant event ID.
-    Derived via SHA-256 of (source_sha256, record_number, parser_id, norm_version).
+    Derived via SHA-256 of (source_sha256, record_number, parser_id, parser_version, norm_version).
     """
-    seed = f"{source_sha256}:{record_number}:{parser_id}:{norm_version}".encode("utf-8")
+    seed = f"{source_sha256}:{record_number}:{parser_id}:{parser_version}:{norm_version}".encode("utf-8")
     hex_digest = hashlib.sha256(seed).hexdigest()[:24]
     return f"evt_{hex_digest}"
 
@@ -48,7 +57,7 @@ class BaseMapper:
 
         Args:
             raw_record: The deserialized JSON object from parsed_records(record_json).
-            context: Metadata containing source_id, filename, sha256, record_number, import_id, record_id.
+            context: Metadata containing source_id, filename, sha256, record_number, import_id, record_id, parser_version.
             normalization_version: The version string for the normalization algorithm.
 
         Returns:
@@ -62,6 +71,7 @@ class GenericJsonlMapper(BaseMapper):
 
     parser_id = "generic_jsonl"
 
+    # Strict, deterministic candidate evaluation tuples (evaluated in order of specificity)
     TIMESTAMP_CANDIDATE_KEYS = (
         "timestamp",
         "time",
@@ -114,8 +124,9 @@ class GenericJsonlMapper(BaseMapper):
         normalization_version: str = "1.0.0",
     ) -> Dict[str, Any]:
         attrs = dict(raw_record.get("attributes", {}))
+        parser_version = context.get("parser_version", "1.0.0")
 
-        # 1. Timestamp
+        # 1. Timestamp (Strict UTC verification - naive timestamps raise NaiveTimestampError)
         raw_ts = raw_record.get("timestamp")
         if not raw_ts:
             for k in self.TIMESTAMP_CANDIDATE_KEYS:
@@ -123,17 +134,18 @@ class GenericJsonlMapper(BaseMapper):
                     raw_ts = attrs[k]
                     break
 
-        utc_ts, is_naive = parse_and_normalize_timestamp(raw_ts)
+        utc_ts, original_ts_str = parse_and_normalize_timestamp(raw_ts)
 
-        # 2. Deterministic Event ID
+        # 2. Deterministic Event ID (incorporates parser_version and norm_version)
         event_id = compute_event_id(
             source_sha256=context["sha256"],
             record_number=context["record_number"],
             parser_id=self.parser_id,
+            parser_version=parser_version,
             norm_version=normalization_version,
         )
 
-        # 3. User Principal
+        # 3. User Principal (first deterministic match)
         user_principal: Optional[str] = None
         for k in self.USER_CANDIDATE_KEYS:
             if k in attrs and attrs[k]:
@@ -173,8 +185,8 @@ class GenericJsonlMapper(BaseMapper):
         event_type = raw_record.get("event_type") or "generic_event"
 
         # 8. Provenance Metadata
-        if is_naive:
-            attrs.setdefault("__provenance", {})["timezone_inferred"] = "UTC_ASSUMED"
+        if original_ts_str != utc_ts:
+            attrs.setdefault("__provenance", {})["original_timestamp"] = original_ts_str
 
         return {
             "event_id": event_id,
@@ -193,6 +205,7 @@ class GenericJsonlMapper(BaseMapper):
             "record_id": context["record_id"],
             "source_id": context["source_id"],
             "record_number": context["record_number"],
+            "parser_version": parser_version,
             "normalization_version": normalization_version,
         }
 
@@ -209,16 +222,18 @@ class AuthCsvMapper(BaseMapper):
         normalization_version: str = "1.0.0",
     ) -> Dict[str, Any]:
         attrs = dict(raw_record.get("attributes", {}))
+        parser_version = context.get("parser_version", "1.0.0")
 
-        # 1. Timestamp
+        # 1. Timestamp (strict UTC conversion)
         raw_ts = raw_record.get("timestamp") or attrs.get("timestamp")
-        utc_ts, is_naive = parse_and_normalize_timestamp(raw_ts)
+        utc_ts, original_ts_str = parse_and_normalize_timestamp(raw_ts)
 
         # 2. Deterministic Event ID
         event_id = compute_event_id(
             source_sha256=context["sha256"],
             record_number=context["record_number"],
             parser_id=self.parser_id,
+            parser_version=parser_version,
             norm_version=normalization_version,
         )
 
@@ -251,8 +266,8 @@ class AuthCsvMapper(BaseMapper):
         event_type = raw_record.get("event_type") or "user_authentication"
 
         # 8. Provenance metadata
-        if is_naive:
-            attrs.setdefault("__provenance", {})["timezone_inferred"] = "UTC_ASSUMED"
+        if original_ts_str != utc_ts:
+            attrs.setdefault("__provenance", {})["original_timestamp"] = original_ts_str
 
         return {
             "event_id": event_id,
@@ -271,6 +286,7 @@ class AuthCsvMapper(BaseMapper):
             "record_id": context["record_id"],
             "source_id": context["source_id"],
             "record_number": context["record_number"],
+            "parser_version": parser_version,
             "normalization_version": normalization_version,
         }
 
@@ -287,16 +303,18 @@ class WebAccessCsvMapper(BaseMapper):
         normalization_version: str = "1.0.0",
     ) -> Dict[str, Any]:
         attrs = dict(raw_record.get("attributes", {}))
+        parser_version = context.get("parser_version", "1.0.0")
 
-        # 1. Timestamp
+        # 1. Timestamp (strict UTC conversion)
         raw_ts = raw_record.get("timestamp") or attrs.get("timestamp")
-        utc_ts, is_naive = parse_and_normalize_timestamp(raw_ts)
+        utc_ts, original_ts_str = parse_and_normalize_timestamp(raw_ts)
 
         # 2. Deterministic Event ID
         event_id = compute_event_id(
             source_sha256=context["sha256"],
             record_number=context["record_number"],
             parser_id=self.parser_id,
+            parser_version=parser_version,
             norm_version=normalization_version,
         )
 
@@ -314,18 +332,22 @@ class WebAccessCsvMapper(BaseMapper):
         if target_resource:
             target_resource = str(target_resource).strip()
 
-        # 6. Status based on HTTP Status Code
+        # 6. Status based on HTTP Status Code (Strict Semantic Mapping)
+        # 2xx -> SUCCESS; 4xx -> FAILURE; 5xx -> ERROR; 1xx & 3xx (Redirects) -> UNKNOWN
         status_code_raw = attrs.get("status_code")
         status_val = "UNKNOWN"
         if status_code_raw is not None:
             try:
                 code_int = int(status_code_raw)
-                if 100 <= code_int < 400:
+                if 200 <= code_int < 300:
                     status_val = "SUCCESS"
                 elif 400 <= code_int < 500:
                     status_val = "FAILURE"
                 elif 500 <= code_int <= 599:
                     status_val = "ERROR"
+                else:
+                    # 1xx (Informational) or 3xx (Redirection) are not application success/failure
+                    status_val = "UNKNOWN"
             except (ValueError, TypeError):
                 status_val = "UNKNOWN"
 
@@ -333,8 +355,8 @@ class WebAccessCsvMapper(BaseMapper):
         event_type = raw_record.get("event_type") or "web_request"
 
         # 8. Provenance metadata
-        if is_naive:
-            attrs.setdefault("__provenance", {})["timezone_inferred"] = "UTC_ASSUMED"
+        if original_ts_str != utc_ts:
+            attrs.setdefault("__provenance", {})["original_timestamp"] = original_ts_str
 
         return {
             "event_id": event_id,
@@ -353,6 +375,6 @@ class WebAccessCsvMapper(BaseMapper):
             "record_id": context["record_id"],
             "source_id": context["source_id"],
             "record_number": context["record_number"],
+            "parser_version": parser_version,
             "normalization_version": normalization_version,
         }
-

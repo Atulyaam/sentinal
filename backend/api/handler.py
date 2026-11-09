@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 from backend.api.upload import parse_import_payload
 from backend.config.settings import get_settings
+from backend.detection.engine import DetectionEngine
 from backend.ingestion.engine import ImportEngine
 from backend.normalization.engine import NormalizationEngine
 from backend.parsers.registry import list_available_parsers
@@ -22,6 +23,7 @@ logger = logging.getLogger("sentinel.api")
 _repo: Optional[IngestionRepository] = None
 _engine: Optional[ImportEngine] = None
 _norm_engine: Optional[NormalizationEngine] = None
+_detection_engine: Optional[DetectionEngine] = None
 
 
 def get_repository() -> IngestionRepository:
@@ -54,10 +56,18 @@ def get_normalization_engine() -> NormalizationEngine:
     return _norm_engine
 
 
-class SentinelRequestHandler(BaseHTTPRequestHandler):
-    """Standard HTTP request handler providing health, ingestion, and query endpoints."""
+def get_detection_engine() -> DetectionEngine:
+    """Obtain or initialize the deterministic detection engine."""
+    global _detection_engine
+    if _detection_engine is None:
+        _detection_engine = DetectionEngine()
+    return _detection_engine
 
-    server_version = "ProjectSentinel/0.3.0"
+
+class SentinelRequestHandler(BaseHTTPRequestHandler):
+    """Standard HTTP request handler providing health, ingestion, normalization, and detection endpoints."""
+
+    server_version = "ProjectSentinel/0.4.0"
 
     def _get_request_origin(self) -> Optional[str]:
         """Extract and normalize incoming Origin header if present."""
@@ -78,7 +88,7 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
         if origin and self._is_origin_allowed(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Requested-With")
             self.send_header("Access-Control-Max-Age", "86400")
 
@@ -267,6 +277,84 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(200, {"errors": errors, "count": len(errors)}, origin=origin)
                 return
 
+            # 10. List detection rules (Phase 4)
+            if clean_path == "/api/rules":
+                repo = get_repository()
+                rules = repo.list_detection_rules()
+                self._send_json_response(200, {"rules": rules, "count": len(rules)}, origin=origin)
+                return
+
+            # 11. Get specific detection rule
+            if clean_path.startswith("/api/rules/"):
+                rule_id = clean_path[len("/api/rules/"):].strip()
+                if not rule_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing rule ID."}, origin=origin)
+                    return
+                repo = get_repository()
+                rule = repo.get_detection_rule(rule_id)
+                if not rule:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Rule '{rule_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, rule, origin=origin)
+                return
+
+            # 12. Detection statistics (Phase 4)
+            if clean_path == "/api/detection/stats":
+                repo = get_repository()
+                stats = repo.get_detection_stats()
+                self._send_json_response(200, stats, origin=origin)
+                return
+
+            # 13. List findings (Phase 4)
+            if clean_path == "/api/findings":
+                query_params = parse_qs(parsed_url.query)
+                limit = 50
+                offset = 0
+                if "limit" in query_params:
+                    try:
+                        limit = min(max(int(query_params["limit"][0]), 1), 200)
+                    except ValueError:
+                        pass
+                if "offset" in query_params:
+                    try:
+                        offset = max(int(query_params["offset"][0]), 0)
+                    except ValueError:
+                        pass
+
+                severity = query_params.get("severity", [None])[0]
+                status = query_params.get("status", [None])[0]
+                rule_id = query_params.get("rule_id", [None])[0]
+
+                repo = get_repository()
+                findings, total = repo.list_findings(
+                    limit=limit,
+                    offset=offset,
+                    severity=severity,
+                    status=status,
+                    rule_id=rule_id,
+                )
+                self._send_json_response(200, {
+                    "findings": findings,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                }, origin=origin)
+                return
+
+            # 14. Get specific finding with supporting events (Phase 4)
+            if clean_path.startswith("/api/findings/"):
+                finding_id = clean_path[len("/api/findings/"):].strip()
+                if not finding_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing finding ID."}, origin=origin)
+                    return
+                repo = get_repository()
+                finding = repo.get_finding(finding_id)
+                if not finding:
+                    self._send_json_response(404, {"error": "Not Found", "message": f"Finding '{finding_id}' not found."}, origin=origin)
+                    return
+                self._send_json_response(200, finding, origin=origin)
+                return
+
             # 404 for unhandled paths
             self._send_json_response(404, {
                 "error": "Not Found",
@@ -371,6 +459,35 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
                 }, origin=origin)
                 return
 
+            # Detection trigger endpoint (Phase 4)
+            if clean_path == "/api/detection/run":
+                content_length_str = self.headers.get("Content-Length")
+                payload_data = {}
+                if content_length_str:
+                    try:
+                        content_length = int(content_length_str)
+                        if content_length > 0:
+                            raw_body = self.rfile.read(content_length)
+                            payload_data = json.loads(raw_body.decode("utf-8"))
+                    except Exception as err:
+                        logger.warning("Could not parse detection/run payload: %s", err)
+
+                rule_ids = payload_data.get("rule_ids")
+                limit_events = int(payload_data.get("limit_events", 5000))
+
+                repo = get_repository()
+                detection_engine = get_detection_engine()
+                det_res = detection_engine.run_detection(
+                    repository=repo,
+                    rule_ids=rule_ids,
+                    limit_events=limit_events,
+                )
+                self._send_json_response(200, {
+                    "status": "success",
+                    "result": det_res,
+                }, origin=origin)
+                return
+
             # 404 for unhandled POST paths
             self._send_json_response(404, {
                 "error": "Not Found",
@@ -381,6 +498,117 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
 
         except Exception as exc:
             logger.error("Unhandled exception during POST request processing: %s", exc, exc_info=True)
+            self._send_json_response(500, {
+                "error": "Internal Server Error",
+                "status": 500,
+                "message": "An internal error occurred while processing the request."
+            }, origin=origin)
+
+    def do_PATCH(self) -> None:
+        """Handle incoming PATCH requests safely (e.g. finding status or rule state updates)."""
+        origin = self._get_request_origin()
+
+        try:
+            parsed_url = urlparse(self.path)
+            clean_path = parsed_url.path.rstrip("/")
+
+            content_length_str = self.headers.get("Content-Length")
+            if not content_length_str:
+                self._send_json_response(400, {
+                    "error": "Bad Request",
+                    "message": "Missing Content-Length header."
+                }, origin=origin)
+                return
+
+            try:
+                content_length = int(content_length_str)
+                raw_body = self.rfile.read(content_length)
+                payload = json.loads(raw_body.decode("utf-8"))
+            except Exception:
+                self._send_json_response(400, {
+                    "error": "Bad Request",
+                    "message": "Invalid JSON payload in request body."
+                }, origin=origin)
+                return
+
+            # 1. Update finding status (Phase 4)
+            if clean_path.startswith("/api/findings/"):
+                finding_id = clean_path[len("/api/findings/"):].strip()
+                if not finding_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing finding ID."}, origin=origin)
+                    return
+
+                new_status = payload.get("status")
+                if not new_status or not isinstance(new_status, str):
+                    self._send_json_response(400, {
+                        "error": "Bad Request",
+                        "message": "Field 'status' is required and must be a string."
+                    }, origin=origin)
+                    return
+
+                try:
+                    repo = get_repository()
+                    updated = repo.update_finding_status(finding_id, new_status)
+                    if not updated:
+                        self._send_json_response(404, {
+                            "error": "Not Found",
+                            "message": f"Finding '{finding_id}' not found."
+                        }, origin=origin)
+                        return
+                    self._send_json_response(200, updated, origin=origin)
+                    return
+                except ValueError as val_err:
+                    self._send_json_response(400, {
+                        "error": "Bad Request",
+                        "message": str(val_err)
+                    }, origin=origin)
+                    return
+
+            # 2. Toggle detection rule enabled state (Phase 4)
+            if clean_path.startswith("/api/rules/"):
+                rule_id = clean_path[len("/api/rules/"):].strip()
+                if not rule_id:
+                    self._send_json_response(400, {"error": "Bad Request", "message": "Missing rule ID."}, origin=origin)
+                    return
+
+                enabled_val = payload.get("enabled")
+                if not isinstance(enabled_val, bool):
+                    self._send_json_response(400, {
+                        "error": "Bad Request",
+                        "message": "Field 'enabled' is required and must be a boolean."
+                    }, origin=origin)
+                    return
+
+                repo = get_repository()
+                success = repo.update_detection_rule_enabled(rule_id, enabled_val)
+                if not success:
+                    self._send_json_response(404, {
+                        "error": "Not Found",
+                        "message": f"Rule '{rule_id}' not found."
+                    }, origin=origin)
+                    return
+
+                # Update in-memory engine registry as well
+                engine = get_detection_engine()
+                engine.registry.set_enabled(rule_id, enabled_val)
+
+                self._send_json_response(200, {
+                    "status": "success",
+                    "rule_id": rule_id,
+                    "enabled": enabled_val,
+                }, origin=origin)
+                return
+
+            # 404 for unhandled PATCH paths
+            self._send_json_response(404, {
+                "error": "Not Found",
+                "path": clean_path,
+                "status": 404,
+                "message": f"Endpoint '{clean_path}' is not registered on this service."
+            }, origin=origin)
+
+        except Exception as exc:
+            logger.error("Unhandled exception during PATCH request processing: %s", exc, exc_info=True)
             self._send_json_response(500, {
                 "error": "Internal Server Error",
                 "status": 500,

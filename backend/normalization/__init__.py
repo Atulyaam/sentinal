@@ -12,6 +12,7 @@ from backend.normalization.mappers import (
     compute_event_id,
 )
 from backend.normalization.timestamps import (
+    NaiveTimestampError,
     format_utc_iso,
     parse_and_normalize_timestamp,
 )
@@ -26,5 +27,6 @@ __all__ = [
     "compute_event_id",
     "parse_and_normalize_timestamp",
     "format_utc_iso",
+    "NaiveTimestampError",
 ]
 

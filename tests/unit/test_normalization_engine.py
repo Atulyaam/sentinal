@@ -35,13 +35,15 @@ class TestNormalizationEngine(unittest.TestCase):
     def test_compute_event_id_deterministic(self) -> None:
         """Verify compute_event_id is strictly deterministic and collision-resistant."""
         sha = "a" * 64
-        id1 = compute_event_id(sha, 10, "auth_csv", "1.0.0")
-        id2 = compute_event_id(sha, 10, "auth_csv", "1.0.0")
-        id3 = compute_event_id(sha, 11, "auth_csv", "1.0.0")
+        id1 = compute_event_id(sha, 10, "auth_csv", "1.0.0", "1.0.0")
+        id2 = compute_event_id(sha, 10, "auth_csv", "1.0.0", "1.0.0")
+        id3 = compute_event_id(sha, 11, "auth_csv", "1.0.0", "1.0.0")
+        id_different_parser_ver = compute_event_id(sha, 10, "auth_csv", "1.0.1", "1.0.0")
 
         self.assertTrue(id1.startswith("evt_"))
         self.assertEqual(id1, id2)
         self.assertNotEqual(id1, id3)
+        self.assertNotEqual(id1, id_different_parser_ver)
 
     def test_generic_jsonl_mapper(self) -> None:
         """Verify mapping of generic JSONL record with candidate keys."""
@@ -64,6 +66,7 @@ class TestNormalizationEngine(unittest.TestCase):
             "record_number": 5,
             "import_id": "imp_1",
             "record_id": "rec_1",
+            "parser_version": "1.0.0",
         }
         event = mapper.map_record(raw_rec, context)
 
@@ -74,6 +77,7 @@ class TestNormalizationEngine(unittest.TestCase):
         self.assertEqual(event["status"], "SUCCESS")
         self.assertEqual(event["source_file"], "logs.jsonl")
         self.assertEqual(event["source_line"], 5)
+        self.assertEqual(event["parser_version"], "1.0.0")
         self.assertEqual(event["attributes"]["custom_metric"], 42)
 
     def test_auth_csv_mapper(self) -> None:
@@ -86,6 +90,7 @@ class TestNormalizationEngine(unittest.TestCase):
             "record_number": 2,
             "import_id": "imp_auth",
             "record_id": "rec_auth",
+            "parser_version": "1.0.0",
         }
 
         # Success case
@@ -103,6 +108,7 @@ class TestNormalizationEngine(unittest.TestCase):
         self.assertEqual(evt_success["timestamp"], "2026-11-09T08:00:00Z")  # 10:00+02:00 -> 08:00Z
         self.assertEqual(evt_success["user_principal"], "admin")
         self.assertEqual(evt_success["source_ip"], "10.0.0.5")
+        self.assertEqual(evt_success["parser_version"], "1.0.0")
 
         # Failure / locked case
         raw_rec_failure = {
@@ -127,6 +133,7 @@ class TestNormalizationEngine(unittest.TestCase):
             "record_number": 12,
             "import_id": "imp_web",
             "record_id": "rec_web",
+            "parser_version": "1.0.0",
         }
 
         # 200 OK -> SUCCESS
@@ -143,6 +150,20 @@ class TestNormalizationEngine(unittest.TestCase):
         evt_200 = mapper.map_record(raw_200, context)
         self.assertEqual(evt_200["status"], "SUCCESS")
         self.assertEqual(evt_200["target_resource"], "/dashboard")
+
+        # 302 Found & 304 Not Modified -> UNKNOWN (not SUCCESS!)
+        raw_302 = {
+            "timestamp": "2026-11-09T08:10:30Z",
+            "event_type": "web_request",
+            "attributes": {
+                "http_method": "GET",
+                "request_path": "/old-page",
+                "status_code": "302",
+                "source_ip": "192.168.1.10",
+            },
+        }
+        evt_302 = mapper.map_record(raw_302, context)
+        self.assertEqual(evt_302["status"], "UNKNOWN")
 
         # 401 Unauthorized -> FAILURE
         raw_401 = {
@@ -174,7 +195,7 @@ class TestNormalizationEngine(unittest.TestCase):
 
     def test_normalization_engine_error_handling(self) -> None:
         """Verify malformed records generate structured normalization errors."""
-        # 1. Invalid timestamp
+        # 1. Invalid timestamp (unparseable)
         bad_ts_row = {
             "record_id": "rec_bad_ts",
             "import_id": "imp_test",
@@ -190,6 +211,24 @@ class TestNormalizationEngine(unittest.TestCase):
         self.assertIsNone(evt)
         self.assertIsNotNone(err)
         self.assertEqual(err["error_code"], "NORM_INVALID_TIMESTAMP")
+
+        # 1b. Naive timestamp without timezone offset -> NORM_TIMEZONE_UNKNOWN
+        naive_ts_row = {
+            "record_id": "rec_naive_ts",
+            "import_id": "imp_test",
+            "record_number": 15,
+            "parser_id": "generic_jsonl",
+            "parser_version": "1.0.0",
+            "record_json": json.dumps({"timestamp": "2026-11-09 08:00:15", "attributes": {}}),
+            "source_id": "src_1",
+            "filename": "naive.jsonl",
+            "sha256": "e" * 64,
+        }
+        evt_naive, err_naive = self.engine.normalize_single_record(naive_ts_row)
+        self.assertIsNone(evt_naive)
+        self.assertIsNotNone(err_naive)
+        self.assertEqual(err_naive["error_code"], "NORM_TIMEZONE_UNKNOWN")
+        self.assertIn("cannot assume UTC", err_naive["safe_error_message"])
 
         # 2. Corrupted JSON payload
         bad_json_row = {

@@ -115,9 +115,89 @@ CREATE INDEX IF NOT EXISTS idx_norm_errors_import ON normalization_errors(import
 CREATE INDEX IF NOT EXISTS idx_norm_errors_record ON normalization_errors(record_id);
 """
 
+MIGRATION_003_SQL = """
+-- 7. Add parser_version to normalized_events for self-contained parser provenance
+ALTER TABLE normalized_events ADD COLUMN parser_version TEXT NOT NULL DEFAULT '1.0.0';
+"""
+
+MIGRATION_004_SQL = """
+-- 8. Detection Rules (Versioned detection definitions)
+CREATE TABLE IF NOT EXISTS detection_rules (
+    rule_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    config_hash TEXT NOT NULL,
+    rule_definition_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc'))
+);
+
+-- 9. Findings (Evidence-backed security detections)
+CREATE TABLE IF NOT EXISTS findings (
+    finding_id TEXT PRIMARY KEY,
+    rule_id TEXT NOT NULL REFERENCES detection_rules(rule_id) ON DELETE RESTRICT,
+    rule_version TEXT NOT NULL,
+    rule_config_hash TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    first_observed_at TEXT NOT NULL,
+    last_observed_at TEXT NOT NULL,
+    matched_entity TEXT,
+    matched_conditions_json TEXT NOT NULL,
+    supporting_event_ids_json TEXT NOT NULL,
+    limitations TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    CONSTRAINT uq_finding_dedupe UNIQUE (rule_id, rule_version, dedupe_key)
+);
+
+-- 10. Finding Events (Relational evidence junction)
+CREATE TABLE IF NOT EXISTS finding_events (
+    finding_id TEXT NOT NULL REFERENCES findings(finding_id) ON DELETE CASCADE,
+    event_id TEXT NOT NULL REFERENCES normalized_events(event_id) ON DELETE RESTRICT,
+    PRIMARY KEY (finding_id, event_id)
+);
+
+-- 11. Rule Evaluations (Audit history of detection engine executions)
+CREATE TABLE IF NOT EXISTS rule_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    evaluated_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+    rule_count INTEGER NOT NULL,
+    events_scanned INTEGER NOT NULL,
+    findings_generated INTEGER NOT NULL,
+    findings_duplicate INTEGER NOT NULL,
+    duration_ms REAL NOT NULL
+);
+
+-- Indexes for performance and query integrity
+CREATE INDEX IF NOT EXISTS idx_findings_rule_id ON findings(rule_id);
+CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+CREATE INDEX IF NOT EXISTS idx_findings_observed ON findings(last_observed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_finding_events_event ON finding_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_rule_evaluations_date ON rule_evaluations(evaluated_at DESC);
+
+-- Seed default detection rules
+INSERT OR IGNORE INTO detection_rules (rule_id, version, name, description, severity, enabled, config_hash, rule_definition_json)
+VALUES 
+('AUTH-001', '1.0.0', 'Repeated Authentication Failures', 'Detects 5 or more failed authentications for the same user within a 10-minute window.', 'Medium', 1, 'cce9a85113c5427f', '{"target_event_type":"user_authentication","target_status":"FAILURE","threshold_count":5,"window_seconds":600}'),
+('AUTH-002', '1.0.0', 'Success After Authentication Failures', 'Detects successful authentication within 30 minutes following an authentication failure burst for the same user.', 'High', 1, '4aba64844021f317', '{"failure_threshold":5,"failure_window_seconds":600,"success_window_seconds":1800}'),
+('WEB-001', '1.0.0', 'Sensitive Route Burst', 'Detects 3 or more requests to sensitive administrative endpoints from the same source within 15 minutes.', 'Medium', 1, '6a4edb386c9a9c3a', '{"sensitive_routes":["/admin","/api/v1/auth","/login","/wp-admin","/internal","/.env","/config"],"threshold_count":3,"window_seconds":900}'),
+('PRIV-001', '1.0.0', 'Explicit Privilege Escalation / Role Change', 'Detects explicit administrative privilege alteration, role modification, or permission grants.', 'High', 1, '8180deeb2e9fdcae', '{"privilege_event_types":["role_changed","privilege_granted","admin_escalation","group_add","role_assigned"],"privilege_actions":["grant_role","assign_admin","sudo","privilege_escalation"]}'),
+('INGEST-001', '1.0.0', 'Ingestion & Timestamp Data Quality Anomaly', 'Detects data-quality anomalies including quarantined timestamps, clock skew, or future-dated events.', 'Info', 1, '598a7581f1108d23', '{"max_future_seconds":86400}');
+"""
+
 MIGRATIONS: List[Tuple[int, str, str]] = [
     (1, "001_initial_schema", MIGRATION_001_SQL),
     (2, "002_canonical_events_and_provenance", MIGRATION_002_SQL),
+    (3, "003_event_parser_version", MIGRATION_003_SQL),
+    (4, "004_detection_rules_and_findings", MIGRATION_004_SQL),
 ]
 
 

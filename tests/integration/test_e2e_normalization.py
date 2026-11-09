@@ -80,7 +80,7 @@ class TestE2ENormalization(unittest.TestCase):
 
     def test_multi_format_normalization_pipeline(self) -> None:
         """Upload web access CSV and JSONL files, normalize both, and verify cross-source event querying."""
-        # 1. Ingest Web Access CSV
+        # 1. Ingest Web Access CSV (3 records)
         web_csv = (
             "timestamp,http_method,request_path,status_code,source_ip\n"
             "2026-11-09T08:00:00Z,GET,/api/v1/health,200,10.0.0.1\n"
@@ -96,10 +96,14 @@ class TestE2ENormalization(unittest.TestCase):
         self.assertEqual(status, 200)
         web_import_id = web_res["import_id"]
 
-        # 2. Ingest JSONL with 1 valid and 1 naive timestamp record
+        # 2. Ingest JSONL with:
+        #    - 1 valid UTC timestamp record
+        #    - 1 valid timezone-offset record (+02:00)
+        #    - 1 naive timestamp record (must be quarantined, NOT assumed UTC)
         jsonl_content = (
             '{"timestamp": "2026-11-09T08:05:00Z", "event_type": "vpn_login", "user": "alice", "ip": "172.16.0.5"}\n'
-            '{"timestamp": "2026-11-09 08:06:00", "event_type": "vpn_disconnect", "user": "alice", "ip": "172.16.0.5"}\n'
+            '{"timestamp": "2026-11-09T10:06:00+02:00", "event_type": "vpn_reauth", "user": "alice", "ip": "172.16.0.5"}\n'
+            '{"timestamp": "2026-11-09 08:07:00", "event_type": "vpn_disconnect", "user": "alice", "ip": "172.16.0.5"}\n'
         )
         status, jsonl_res = self._post("/api/import", {
             "filename": "vpn.jsonl",
@@ -113,14 +117,15 @@ class TestE2ENormalization(unittest.TestCase):
         # 3. Check unnormalized stats prior to running normalization
         status, stats_before = self._get("/api/normalization/stats")
         self.assertEqual(status, 200)
-        self.assertEqual(stats_before["pending_unnormalized_records"], 5)
+        self.assertEqual(stats_before["pending_unnormalized_records"], 6)
         self.assertEqual(stats_before["total_normalized_events"], 0)
 
         # 4. Run Normalization
+        # Expected: 3 web CSV + 2 aware JSONL = 5 accepted; 1 naive JSONL = 1 rejected (quarantined)
         status, run_res = self._post("/api/normalization/run", {})
         self.assertEqual(status, 200)
         self.assertEqual(run_res["result"]["accepted"], 5)
-        self.assertEqual(run_res["result"]["rejected"], 0)
+        self.assertEqual(run_res["result"]["rejected"], 1)
 
         # 5. Check stats after normalization
         status, stats_after = self._get("/api/normalization/stats")
@@ -129,15 +134,18 @@ class TestE2ENormalization(unittest.TestCase):
         self.assertEqual(stats_after["total_normalized_events"], 5)
         self.assertEqual(stats_after["events_by_type"]["web_request"], 3)
         self.assertEqual(stats_after["events_by_type"]["vpn_login"], 1)
-        self.assertEqual(stats_after["events_by_type"]["vpn_disconnect"], 1)
+        self.assertEqual(stats_after["events_by_type"]["vpn_reauth"], 1)
 
-        # 6. Verify Naive timestamp annotation in event attributes
-        status, evts = self._get("/api/events?event_type=vpn_disconnect")
+        # 6. Verify offset timestamp was converted to UTC and original preserved in provenance
+        status, evts = self._get("/api/events?event_type=vpn_reauth")
         self.assertEqual(status, 200)
         self.assertEqual(evts["total"], 1)
-        vpn_evt = evts["events"][0]
-        self.assertEqual(vpn_evt["timestamp"], "2026-11-09T08:06:00Z")
-        self.assertEqual(vpn_evt["attributes"]["__provenance"]["timezone_inferred"], "UTC_ASSUMED")
+        reauth_evt = evts["events"][0]
+        self.assertEqual(reauth_evt["timestamp"], "2026-11-09T08:06:00Z")
+        self.assertEqual(
+            reauth_evt["attributes"]["__provenance"]["original_timestamp"],
+            "2026-11-09T10:06:00+02:00",
+        )
 
         # 7. Verify Web status classification (SUCCESS, FAILURE, ERROR)
         status, web_evts = self._get(f"/api/events?import_id={web_import_id}")
@@ -160,4 +168,3 @@ class TestE2ENormalization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

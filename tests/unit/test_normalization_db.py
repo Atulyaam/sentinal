@@ -78,14 +78,21 @@ class TestNormalizationDatabase(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_migrations_applied(self) -> None:
-        """Verify schema_migrations table tracks migration 1 and 2."""
+        """Verify schema_migrations table tracks migrations."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT version, name FROM schema_migrations ORDER BY version ASC;")
         versions = cursor.fetchall()
-        self.assertEqual(len(versions), 2)
+        self.assertGreaterEqual(len(versions), 3)
         self.assertEqual(versions[0][0], 1)
         self.assertEqual(versions[1][0], 2)
         self.assertEqual(versions[1][1], "002_canonical_events_and_provenance")
+        self.assertEqual(versions[2][0], 3)
+        self.assertEqual(versions[2][1], "003_event_parser_version")
+
+        # Verify parser_version column exists in normalized_events table info
+        cursor.execute("PRAGMA table_info(normalized_events);")
+        columns = {col[1] for col in cursor.fetchall()}
+        self.assertIn("parser_version", columns)
 
     def test_get_unnormalized_records(self) -> None:
         """Verify unnormalized records are discovered correctly."""

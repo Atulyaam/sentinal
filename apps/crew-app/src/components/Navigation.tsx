@@ -31,8 +31,6 @@ export const ROUTES: RouteMeta[] = [
     id: 'findings',
     label: 'Findings',
     icon: 'findings',
-    planned: true,
-    sprint: 'Sprint 4',
     description: 'Deterministic rule detections with parameter thresholds and matched condition sets.',
   },
   {

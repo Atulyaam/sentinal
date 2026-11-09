@@ -77,7 +77,7 @@ def main() -> None:
         auth_csv_content = (
             "timestamp,username,auth_result,source_ip,session_id\n"
             f"2026-11-09T08:00:00Z,operator_alpha,SUCCESS,192.168.1.100,sess_{run_ts}_1\n"
-            f"2026-11-09 08:05:00,operator_beta,FAILURE,192.168.1.105,sess_{run_ts}_2\n"
+            f"2026-11-09T08:05:00Z,operator_beta,FAILURE,192.168.1.105,sess_{run_ts}_2\n"
         )
         status, auth_res = request_json("POST", "/api/import", {
             "filename": f"audit_auth_{run_ts}.csv",
@@ -105,6 +105,20 @@ def main() -> None:
         web_import_id = web_res["import_id"]
         print(f"    [PASS] Web CSV ingested: import_id={web_import_id}, accepted={web_res['accepted_records']}")
 
+        # 2c. JSONL with naive timestamp to verify quarantine behavior
+        naive_jsonl_content = (
+            f'{{"timestamp": "2026-11-09 08:30:00", "event_type": "naive_test", "user": "quarantine_target"}}\n'
+        )
+        status, naive_res = request_json("POST", "/api/import", {
+            "filename": f"naive_{run_ts}.jsonl",
+            "content": naive_jsonl_content,
+            "parser_id": "generic_jsonl",
+            "source_id": "src_manual_default",
+        })
+        assert status == 200, f"Naive JSONL import failed with status {status}"
+        naive_import_id = naive_res["import_id"]
+        print(f"    [PASS] Naive JSONL ingested: import_id={naive_import_id}, accepted={naive_res['accepted_records']}")
+
         # STEP 3: Execute Normalization Batch
         print("\n--> [Step 3] Triggering POST /api/normalization/run...")
         status, run_res = request_json("POST", "/api/normalization/run", {"limit": 100})
@@ -112,6 +126,7 @@ def main() -> None:
         norm_result = run_res["result"]
         print(f"    [PASS] Normalization executed: {norm_result['accepted']} accepted, {norm_result['rejected']} rejected, {norm_result['skipped']} skipped.")
         assert norm_result["accepted"] >= 4, f"Expected at least 4 accepted events, got {norm_result['accepted']}"
+        assert norm_result["rejected"] >= 1, f"Expected at least 1 rejected (quarantined) event, got {norm_result['rejected']}"
 
         # STEP 4: Query /api/events with filters
         print("\n--> [Step 4] Querying GET /api/events with dynamic filters...")
@@ -156,13 +171,23 @@ def main() -> None:
 
         # Verify foreign keys between normalized_events and parsed_records
         cursor.execute("""
-            SELECT ne.event_id, ne.record_id, pr.parser_id, ne.source_sha256
+            SELECT ne.event_id, ne.record_id, pr.parser_id, ne.parser_version, ne.source_sha256
             FROM normalized_events ne
             JOIN parsed_records pr ON ne.record_id = pr.record_id
             LIMIT 5;
         """)
         linked_rows = cursor.fetchall()
-        print(f"    [PASS] Verified FK integrity across {len(linked_rows)} sampled normalized events.")
+        print(f"    [PASS] Verified FK integrity and parser_version column across {len(linked_rows)} sampled normalized events.")
+
+        # Verify naive timestamp quarantine in normalization_errors
+        cursor.execute("""
+            SELECT error_id, error_code, safe_error_message
+            FROM normalization_errors
+            WHERE error_code = 'NORM_TIMEZONE_UNKNOWN';
+        """)
+        quarantined = cursor.fetchall()
+        assert len(quarantined) >= 1, "Expected at least 1 quarantined naive timestamp error"
+        print(f"    [PASS] Verified naive timestamp quarantine in SQLite: {len(quarantined)} error(s) with code NORM_TIMEZONE_UNKNOWN.")
 
         # Verify idempotency constraint
         cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_norm_events_ts';")

@@ -11,6 +11,7 @@ from backend.normalization.mappers import (
     GenericJsonlMapper,
     WebAccessCsvMapper,
 )
+from backend.normalization.timestamps import NaiveTimestampError
 from backend.persistence.repository import IngestionRepository
 
 logger = logging.getLogger("sentinel.normalization.engine")
@@ -79,6 +80,7 @@ class NormalizationEngine:
             }
 
         # 3. Build provenance context
+        parser_version = record_row.get("parser_version", "1.0.0")
         context = {
             "source_id": record_row["source_id"],
             "filename": record_row["filename"],
@@ -86,6 +88,7 @@ class NormalizationEngine:
             "record_number": rec_num,
             "import_id": import_id,
             "record_id": rec_id,
+            "parser_version": parser_version,
         }
 
         # 4. Map record
@@ -113,6 +116,17 @@ class NormalizationEngine:
 
             return event, None
 
+        except NaiveTimestampError as err:
+            err_msg = str(err)
+            logger.info("Normalization quarantined record %s (naive timestamp): %s", rec_id, err_msg)
+            return None, {
+                "error_id": f"nerr_{uuid.uuid4().hex[:12]}",
+                "record_id": rec_id,
+                "import_id": import_id,
+                "record_number": rec_num,
+                "error_code": "NORM_TIMEZONE_UNKNOWN",
+                "safe_error_message": err_msg,
+            }
         except ValueError as err:
             err_msg = str(err)
             error_code = "NORM_INVALID_TIMESTAMP" if "timestamp" in err_msg.lower() else "NORM_SCHEMA_VIOLATION"
